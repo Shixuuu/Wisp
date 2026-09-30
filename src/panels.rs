@@ -1677,6 +1677,12 @@ fn line(title: &str, detail: Option<&str>, control: &impl IsA<gtk::Widget>) -> g
     }
     row.append(&text);
     control.set_valign(gtk::Align::Center);
+    if control.has_css_class("switch") {
+        // A switch is known by its line's title, to a screen reader too.
+        control
+            .upcast_ref::<gtk::Widget>()
+            .update_relation(&[gtk::accessible::Relation::LabelledBy(&[t.upcast_ref()])]);
+    }
     row.append(control);
     row.upcast()
 }
@@ -1779,9 +1785,14 @@ fn switch(on: bool, changed: impl Fn(bool) + 'static) -> gtk::Widget {
     let button = gtk::Button::new();
     button.add_css_class("switch");
     button.set_child(Some(&knob));
+    let pressed = |b: &gtk::Button, on: bool| {
+        let state = if on { gtk::AccessibleTristate::True } else { gtk::AccessibleTristate::False };
+        b.update_state(&[gtk::accessible::State::Pressed(state)]);
+    };
     if on {
         button.add_css_class("on");
     }
+    pressed(&button, on);
     let k = knob.clone();
     let travel = Tween::new(&knob, if on { 12.0 } else { 0.0 }, move |x| k.set_offset(x, 0.0));
     let state = Cell::new(on);
@@ -1793,6 +1804,7 @@ fn switch(on: bool, changed: impl Fn(bool) + 'static) -> gtk::Widget {
         } else {
             button.remove_css_class("on")
         }
+        pressed(button, on);
         travel.to(if on { 12.0 } else { 0.0 }, Curve::Settle);
         changed(on);
     });

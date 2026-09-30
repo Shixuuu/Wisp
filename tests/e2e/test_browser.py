@@ -228,12 +228,8 @@ def ad_blocker_off_for_a_site(app):
     app.go("http://news.test")
     shown(app, "news.test")
     app.key("ctrl+comma")
-    app.press("the Privacy page", role="label", name="Privacy")
-    row = app.see("the per-site switch", role="label", name="Block on news.test")
-    x, y, w, h = app.box(row)
-    switches = [n for n in app.nodes(role="push button") if abs(app.box(n)[1] - y) < 30 and app.box(n)[0] > x + w]
-    check("the switch is there", switches)
-    app.click_node(switches[0])
+    app.press("the Privacy page", role="push button", name="Privacy")
+    app.press("the per-site switch", role="push button", name="Block on news.test")
     app.key("Escape")
     wait("the tracker loaded once the site is let off", lambda: app.server.asked("doubleclick.net"), 10)
 
@@ -366,7 +362,7 @@ def settings_change_the_look(app):
     app.see("settings", role="label", name="Settings")
     app.press("Dark", role="push button", name="Dark")
     wait("dark written down", lambda: app.prefs().get("look") == "dark")
-    app.press("Tabs page", role="label", name="Tabs")
+    app.press("Tabs page", role="push button", name="Tabs")
     app.see("tab settings", role="label", name="Tabs in a sidebar")
 
 

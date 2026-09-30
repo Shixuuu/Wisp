@@ -340,27 +340,18 @@ class App:
         self.click(x + w // 2, y + h // 2, button, times)
 
     def press(self, what, role=None, name=None, contains=None, button=1):
+        """Press a button the way a screen reader does; click anything else.
+
+        Where GTK says a thing is on screen isn't reliable across versions
+        for the layers laid over the page, but a button's action always is.
+        """
         node = self.see(what, role, name, contains)
-        # Things slide and rise into place; click where it comes to rest.
-        x, y, w, h = wait(f"{what} to settle", lambda: self._still(node))
-        width, height = self.size()
-        if button == 1 and not (0 <= x + w // 2 < width and 0 <= y + h // 2 < height):
-            # In a popover: GTK 4.14 misplaces those, so press the way a
-            # screen reader would.
-            node.get_action_iface().do_action(0)
+        action = node.get_action_iface()
+        if button == 1 and ROLES.get(node.get_role_name(), node.get_role_name()) == "push button" and action:
+            action.do_action(0)
             time.sleep(0.45)
         else:
             self.click_node(node, button)
-
-    def _still(self, node):
-        first = self.box(node)
-        time.sleep(0.1)
-        return first if self.box(node) == first else None
-
-    def size(self):
-        out = subprocess.run(["xdotool", "getwindowgeometry", "--shell", self.window], capture_output=True, text=True).stdout
-        geo = dict(line.split("=") for line in out.split())
-        return int(geo["WIDTH"]), int(geo["HEIGHT"])
 
     def go(self, typed):
         """Type into the address field and press Return."""
