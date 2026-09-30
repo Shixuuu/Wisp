@@ -341,7 +341,8 @@ class App:
 
     def press(self, what, role=None, name=None, contains=None, button=1):
         node = self.see(what, role, name, contains)
-        x, y, w, h = self.box(node)
+        # Things slide and rise into place; click where it comes to rest.
+        x, y, w, h = wait(f"{what} to settle", lambda: self._still(node))
         width, height = self.size()
         if button == 1 and not (0 <= x + w // 2 < width and 0 <= y + h // 2 < height):
             # In a popover: GTK 4.14 misplaces those, so press the way a
@@ -350,6 +351,11 @@ class App:
             time.sleep(0.45)
         else:
             self.click_node(node, button)
+
+    def _still(self, node):
+        first = self.box(node)
+        time.sleep(0.1)
+        return first if self.box(node) == first else None
 
     def size(self):
         out = subprocess.run(["xdotool", "getwindowgeometry", "--shell", self.window], capture_output=True, text=True).stdout
