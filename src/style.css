@@ -1,0 +1,108 @@
+/* Wisp's frame: quiet greys that get out of the page's way. Colours come
+   from libadwaita's named colours, so light and dark (and any accent the
+   desktop picks) follow without this file knowing which is which. */
+
+window.wisp {
+  background-color: @window_bg_color;
+}
+
+.wisp-sidebar {
+  padding: 6px 8px 8px 8px;
+  background-color: @sidebar_bg_color;
+}
+
+.wisp-topbar {
+  padding: 4px 6px;
+  background-color: @headerbar_bg_color;
+}
+
+.wisp-field {
+  min-height: 32px;
+  border-radius: 8px;
+}
+
+.wisp-field.private {
+  outline: 2px solid alpha(@accent_bg_color, 0.6);
+  outline-offset: -2px;
+}
+
+.wisp-tab {
+  padding: 5px 8px;
+  border-radius: 8px;
+  min-height: 22px;
+  transition: background-color 80ms ease-out;
+}
+
+.wisp-tabs.horizontal .wisp-tab,
+box.horizontal.wisp-tabs > .wisp-tab {
+  min-width: 140px;
+}
+
+.wisp-tab:hover {
+  background-color: alpha(currentColor, 0.06);
+}
+
+.wisp-tab.current {
+  background-color: alpha(currentColor, 0.11);
+}
+
+.wisp-tab.asleep label {
+  opacity: 0.6;
+}
+
+.wisp-tab.private .favicon {
+  color: @accent_color;
+}
+
+.wisp-tab .tab-close {
+  min-width: 20px;
+  min-height: 20px;
+  padding: 0;
+  opacity: 0;
+}
+
+.wisp-tab:hover .tab-close,
+.wisp-tab.current .tab-close {
+  opacity: 0.7;
+}
+
+.wisp-tab.pinned {
+  padding: 8px;
+  background-color: alpha(currentColor, 0.05);
+}
+
+.wisp-tab.pinned.current {
+  background-color: alpha(currentColor, 0.13);
+}
+
+.wisp-pins flowboxchild {
+  padding: 0;
+}
+
+.wisp-progress trough,
+.wisp-progress progress {
+  min-height: 2px;
+}
+
+.wisp-status {
+  margin: 0 0 6px 6px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  font-size: 0.85em;
+  background-color: alpha(@view_bg_color, 0.95);
+  color: @view_fg_color;
+  box-shadow: 0 1px 3px alpha(black, 0.18);
+}
+
+.wisp-find {
+  padding: 6px 8px;
+  border-bottom: 1px solid alpha(currentColor, 0.1);
+}
+
+.wisp-suggestions {
+  background: none;
+}
+
+.wisp-suggestion {
+  padding: 6px 8px;
+}

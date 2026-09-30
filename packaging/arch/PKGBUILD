@@ -1,0 +1,67 @@
+# Maintainer: xengleng <xengleng@users.noreply.github.com>
+#
+# Builds Wisp from the latest commit on GitHub. From a checkout of the repo:
+#   cd packaging/arch && makepkg -si
+
+pkgname=wisp-git
+_pkgname=wisp
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="A small, fast, quiet web browser built on WebKitGTK (Rust rewrite of Search)"
+arch=('x86_64' 'aarch64')
+url="https://github.com/Shixuuu/Wisp"
+license=('MIT')
+depends=(
+  'webkitgtk-6.0'
+  'gtk4'
+  'libadwaita'
+  'glib2'
+  'gcc-libs'
+  'glibc'
+  'hicolor-icon-theme'
+)
+makedepends=('cargo' 'git')
+optdepends=(
+  'xdg-desktop-portal-gtk: file pickers and opening downloads (or your desktop'"'"'s portal)'
+  'gst-plugins-good: audio and video playback'
+  'gst-plugins-bad: more video formats'
+  'gst-libav: H.264 and other proprietary codecs'
+  'hunspell-en_us: spell checking (or another hunspell dictionary)'
+)
+provides=("$_pkgname")
+conflicts=("$_pkgname")
+options=('!lto')  # Cargo does its own LTO (see Cargo.toml); makepkg's would double it.
+source=("$_pkgname::git+$url.git")
+sha256sums=('SKIP')
+
+pkgver() {
+  cd "$_pkgname"
+  printf "%s.r%s.g%s" \
+    "$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)" \
+    "$(git rev-list --count HEAD)" \
+    "$(git rev-parse --short=7 HEAD)"
+}
+
+prepare() {
+  cd "$_pkgname"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+  cd "$_pkgname"
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
+  cargo build --frozen --release
+}
+
+check() {
+  cd "$_pkgname"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo test --frozen
+}
+
+package() {
+  cd "$_pkgname"
+  make install PREFIX=/usr DESTDIR="$pkgdir"
+}

@@ -1,0 +1,31 @@
+[package]
+name = "wisp"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "A small, fast, quiet web browser for Arch Linux, built on WebKitGTK"
+license = "MIT"
+repository = "https://github.com/Shixuuu/Wisp"
+keywords = ["browser", "webkit", "gtk", "arch-linux"]
+categories = ["gui"]
+
+[dependencies]
+# The minimum versions here are what Ubuntu 24.04 and Arch both ship; Arch is
+# newer on every one of them.
+adw = { version = "0.9", package = "libadwaita", features = ["v1_5"] }
+gtk = { version = "0.11", package = "gtk4", features = ["v4_14"] }
+webkit6 = { version = "0.6", features = ["v2_44"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+url = "2.5"
+
+# Release builds: one codegen unit and whole-program LTO give the smallest,
+# fastest binary. `panic = "abort"` drops the unwinding tables; a panic in a
+# GTK callback aborts anyway. Stripping is left to makepkg, which splits the
+# symbols into a -debug package when `debug` is in OPTIONS.
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+debug = "line-tables-only"

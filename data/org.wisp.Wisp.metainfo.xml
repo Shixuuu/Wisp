@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>org.wisp.Wisp</id>
+  <name>Wisp</name>
+  <summary>A small, fast, quiet web browser</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <launchable type="desktop-id">org.wisp.Wisp.desktop</launchable>
+  <description>
+    <p>
+      Wisp is a browser with nothing in the way: a row of tabs, one field, and the page.
+      It uses WebKitGTK, the WebKit already on your system, so it is small and starts instantly.
+    </p>
+    <ul>
+      <li>An ad and tracker blocker that runs inside WebKit, before the page loads</li>
+      <li>Hide any element on a site, for good</li>
+      <li>Reading mode, private tabs, pinned tabs, tabs that sleep when idle</li>
+      <li>No account, no sync, no telemetry</li>
+    </ul>
+  </description>
+  <categories>
+    <category>Network</category>
+    <category>WebBrowser</category>
+  </categories>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.1.0" date="2026-09-30"/>
+  </releases>
+</component>

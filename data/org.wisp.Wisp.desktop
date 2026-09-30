@@ -1,0 +1,19 @@
+[Desktop Entry]
+Type=Application
+Name=Wisp
+GenericName=Web Browser
+Comment=A small, fast, quiet web browser
+Exec=wisp %U
+Icon=org.wisp.Wisp
+Terminal=false
+StartupNotify=true
+StartupWMClass=org.wisp.Wisp
+DBusActivatable=false
+Categories=Network;WebBrowser;GTK;
+Keywords=web;browser;internet;webkit;
+MimeType=text/html;text/xml;application/xhtml+xml;x-scheme-handler/http;x-scheme-handler/https;
+Actions=new-private-window;
+
+[Desktop Action new-private-window]
+Name=New Private Tab
+Exec=wisp --private
