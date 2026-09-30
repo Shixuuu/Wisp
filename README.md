@@ -20,15 +20,23 @@ moves it to Linux:
 
 ## Install on Arch
 
-From a checkout of this repository:
+One command, which installs the dependencies, builds the package and installs
+it with pacman:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Shixuuu/Wisp/main/install.sh | bash
+```
+
+Run it again to upgrade. Uninstall with `sudo pacman -R wisp-git`.
+
+Or from a checkout of this repository:
 
 ```sh
 cd packaging/arch
 makepkg -si
 ```
 
-This builds the `wisp-git` package and installs it with pacman. Uninstall
-with `sudo pacman -R wisp-git`.
+This builds the `wisp-git` package and installs it with pacman.
 
 Or by hand:
 
