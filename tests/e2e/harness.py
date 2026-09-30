@@ -154,6 +154,10 @@ class Failure(AssertionError):
     pass
 
 
+# Newer AT-SPI names some roles differently; these are the same thing.
+ROLES = {"button": "push button"}
+
+
 def wait(what, check, timeout=8.0, every=0.15):
     """Until `check()` is truthy; that value is returned."""
     end = time.time() + timeout
@@ -257,7 +261,7 @@ class App:
                 return
             if showing and not states.contains(Atspi.StateType.SHOWING):
                 return
-            if (role is None or r == role) and (name is None or n == name) and (contains is None or contains in n):
+            if (role is None or ROLES.get(r, r) == ROLES.get(role, role)) and (name is None or n == name) and (contains is None or contains in n):
                 found.append(node)
             for i in range(count):
                 try:
@@ -278,7 +282,13 @@ class App:
         return bool(self.nodes(role, name, contains))
 
     def see(self, what, role=None, name=None, contains=None, timeout=8.0):
-        return wait(what, lambda: self.nodes(role, name, contains), timeout)[0]
+        try:
+            return wait(what, lambda: self.nodes(role, name, contains), timeout)[0]
+        except Failure:
+            # What was on screen instead, for reading the failure from a log.
+            shown = [(n.get_role_name(), n.get_name()) for n in self.nodes() if n.get_name()]
+            print(f"    on screen: {shown}", flush=True)
+            raise
 
     def gone(self, what, role=None, name=None, contains=None, timeout=8.0):
         return wait(what, lambda: not self.nodes(role, name, contains), timeout)
