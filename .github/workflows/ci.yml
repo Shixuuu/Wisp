@@ -12,14 +12,20 @@ jobs:
     steps:
       - name: Install dependencies
         run: |
-          pacman -Syu --noconfirm --needed base-devel git rust webkitgtk-6.0 gtk4 libadwaita
+          pacman -Syu --noconfirm --needed base-devel git rust webkitgtk-6.0 gtk4 libadwaita \
+            xorg-server-xvfb xdotool python-gobject at-spi2-core imagemagick ttf-dejavu
       - uses: actions/checkout@v4
       - name: Format
         run: cargo fmt --check
       - name: Lint
         run: cargo clippy --locked --all-targets -- -D warnings
-      - name: Test
-        run: cargo test --locked
+      - name: End-to-end tests
+        run: tests/e2e/run.sh
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: e2e-screenshots
+          path: target/e2e/
       - name: Release build
         run: cargo build --locked --release
       - uses: actions/upload-artifact@v4

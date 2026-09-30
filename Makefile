@@ -15,7 +15,7 @@ build:
 	$(CARGO) build --release --locked
 
 test:
-	$(CARGO) test --locked
+	tests/e2e/run.sh
 
 install:
 	install -Dm755 target/release/wisp "$(BINDIR)/wisp"

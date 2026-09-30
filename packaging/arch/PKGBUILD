@@ -2,10 +2,13 @@
 #
 # Builds Wisp from the latest commit on GitHub. From a checkout of the repo:
 #   cd packaging/arch && makepkg -si
+#
+# No check(): Wisp's tests are end-to-end and need a screen. Run them from
+# a checkout with tests/e2e/run.sh.
 
 pkgname=wisp-git
 _pkgname=wisp
-pkgver=0.1.0
+pkgver=0.2.0
 pkgrel=1
 pkgdesc="A small, fast, quiet web browser built on WebKitGTK (Rust rewrite of Search)"
 arch=('x86_64' 'aarch64')
@@ -53,12 +56,6 @@ build() {
   export RUSTUP_TOOLCHAIN=stable
   export CARGO_TARGET_DIR=target
   cargo build --frozen --release
-}
-
-check() {
-  cd "$_pkgname"
-  export RUSTUP_TOOLCHAIN=stable
-  cargo test --frozen
 }
 
 package() {

@@ -1,6 +1,6 @@
 pkgbase = wisp-git
 	pkgdesc = A small, fast, quiet web browser built on WebKitGTK (Rust rewrite of Search)
-	pkgver = 0.1.0
+	pkgver = 0.2.0
 	pkgrel = 1
 	url = https://github.com/Shixuuu/Wisp
 	arch = x86_64

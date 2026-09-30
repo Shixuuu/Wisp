@@ -120,14 +120,3 @@ pub fn rules() -> String {
     }
     Value::Array(rules).to_string()
 }
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn rules_are_json() {
-        let v: serde_json::Value = serde_json::from_str(&super::rules()).unwrap();
-        let list = v.as_array().unwrap();
-        assert_eq!(list.len(), super::UNWANTED.len() + 1 + super::SLOTS_BY_SITE.len());
-        assert_eq!(list[0]["trigger"]["url-filter"], "^https?://([^/]+\\.)?doubleclick\\.net");
-    }
-}

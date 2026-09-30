@@ -1,91 +1,180 @@
-//! Bookmarks: a flat list you can search. Folders from an import are kept as a
-//! label on each bookmark rather than as a tree to click through.
-//!
-//! Import reads the `Bookmarks` JSON file that every Chromium-family browser
-//! keeps under `~/.config`. Nothing is sent anywhere.
+//! Bookmarks: folders and sites, kept in a small file. Import reads the
+//! `Bookmarks` file every Chromium-family browser keeps under `~/.config`.
 
 use crate::store;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Bookmark {
-    pub url: String,
+    pub id: u64,
     pub title: String,
+    /// None for a folder.
+    pub url: Option<String>,
     #[serde(default)]
-    pub folder: String,
-    pub added: i64,
+    pub children: Vec<Bookmark>,
 }
 
 #[derive(Default)]
 pub struct Bookmarks {
-    pub items: Vec<Bookmark>,
+    pub roots: Vec<Bookmark>,
+}
+
+fn file() -> PathBuf {
+    store::data_dir().join("bookmarks.json")
+}
+
+fn fresh_id() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let base = crate::history::now() as u64 * 1000;
+    base + NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
+fn same(a: &str, b: &str) -> bool {
+    crate::history::identity(a) == crate::history::identity(b)
 }
 
 impl Bookmarks {
-    fn file() -> PathBuf {
-        store::data_dir().join("bookmarks.json")
-    }
-
     pub fn load() -> Bookmarks {
-        Bookmarks { items: store::load(&Self::file()) }
+        Bookmarks { roots: store::load(&file()) }
     }
 
-    pub fn save(&self) {
-        if let Err(err) = store::save(&Self::file(), &self.items) {
+    fn save(&self) {
+        if let Err(err) = store::save(&file(), &self.roots) {
             eprintln!("wisp: couldn't save bookmarks: {err}");
         }
     }
 
-    pub fn contains(&self, url: &str) -> bool {
-        let key = crate::history::identity(url);
-        self.items.iter().any(|b| crate::history::identity(&b.url) == key)
+    pub fn count(nodes: &[Bookmark]) -> usize {
+        nodes.iter().map(|n| if n.url.is_none() { Self::count(&n.children) } else { 1 }).sum()
     }
 
-    /// Add it if it is missing, take it away if it is there. Returns whether
-    /// the page is bookmarked afterwards.
-    pub fn toggle(&mut self, url: &str, title: &str) -> bool {
-        let key = crate::history::identity(url);
-        let before = self.items.len();
-        self.items.retain(|b| crate::history::identity(&b.url) != key);
-        let added = self.items.len() == before;
-        if added {
-            self.items.push(Bookmark {
-                url: url.to_string(),
-                title: title.to_string(),
-                folder: String::new(),
-                added: crate::history::now(),
-            });
+    fn find_mut(nodes: &mut [Bookmark], id: u64) -> Option<&mut Bookmark> {
+        for n in nodes {
+            if n.id == id {
+                return Some(n);
+            }
+            if let Some(found) = Self::find_mut(&mut n.children, id) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    pub fn find(&self, url: &str) -> Option<Bookmark> {
+        fn walk(nodes: &[Bookmark], url: &str) -> Option<Bookmark> {
+            nodes.iter().find_map(|n| match &n.url {
+                Some(u) if same(u, url) => Some(n.clone()),
+                Some(_) => None,
+                None => walk(&n.children, url),
+            })
+        }
+        walk(&self.roots, url)
+    }
+
+    /// The page added at the end of the list, or the bookmark already kept.
+    pub fn keep(&mut self, url: &str, title: &str) -> (Bookmark, bool) {
+        if let Some(kept) = self.find(url) {
+            return (kept, false);
+        }
+        let b = Bookmark { id: fresh_id(), title: title.to_string(), url: Some(url.to_string()), children: vec![] };
+        self.roots.push(b.clone());
+        self.save();
+        (b, true)
+    }
+
+    pub fn rename(&mut self, id: u64, title: &str) {
+        if let Some(n) = Self::find_mut(&mut self.roots, id) {
+            n.title = title.to_string();
+            self.save();
+        }
+    }
+
+    fn take(nodes: &mut Vec<Bookmark>, id: u64) -> Option<Bookmark> {
+        if let Some(i) = nodes.iter().position(|n| n.id == id) {
+            return Some(nodes.remove(i));
+        }
+        nodes.iter_mut().find_map(|n| Self::take(&mut n.children, id))
+    }
+
+    pub fn remove(&mut self, id: u64) {
+        Self::take(&mut self.roots, id);
+        self.save();
+    }
+
+    /// Into a folder, or to the top level with None.
+    pub fn move_into(&mut self, id: u64, folder: Option<u64>) {
+        let Some(node) = Self::take(&mut self.roots, id) else { return };
+        match folder.and_then(|f| Self::find_mut(&mut self.roots, f)) {
+            Some(f) => f.children.push(node),
+            None => self.roots.push(node),
         }
         self.save();
-        added
     }
 
-    pub fn remove(&mut self, url: &str) {
-        self.items.retain(|b| b.url != url);
+    pub fn new_folder(&mut self, title: &str) -> u64 {
+        let id = fresh_id();
+        self.roots.push(Bookmark { id, title: title.to_string(), url: None, children: vec![] });
         self.save();
+        id
     }
 
-    pub fn matching(&self, typed: &str) -> Vec<Bookmark> {
-        let words: Vec<String> = typed.split_whitespace().map(str::to_lowercase).collect();
-        self.items
-            .iter()
-            .filter(|b| {
-                let hay = format!("{} {} {}", b.title, b.url, b.folder).to_lowercase();
-                words.iter().all(|w| hay.contains(w.as_str()))
-            })
-            .cloned()
-            .collect()
+    /// Every folder, with how deep it sits.
+    pub fn folders(&self) -> Vec<(u64, String, usize)> {
+        fn walk(nodes: &[Bookmark], depth: usize, out: &mut Vec<(u64, String, usize)>) {
+            for n in nodes.iter().filter(|n| n.url.is_none()) {
+                out.push((n.id, n.title.clone(), depth));
+                walk(&n.children, depth + 1, out);
+            }
+        }
+        let mut out = vec![];
+        walk(&self.roots, 0, &mut out);
+        out
     }
 
-    /// Import from every Chromium-family browser found. Returns how many new
-    /// bookmarks arrived, per browser.
-    pub fn import_chromium(&mut self) -> Vec<(String, usize)> {
-        let config = std::env::var_os("XDG_CONFIG_HOME")
-            .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")));
-        let Some(config) = config else { return Vec::new() };
+    /// The folder a bookmark is filed in, by name.
+    pub fn folder_of(&self, id: u64) -> Option<String> {
+        fn walk(nodes: &[Bookmark], id: u64, parent: Option<&str>) -> Option<Option<String>> {
+            for n in nodes {
+                if n.id == id {
+                    return Some(parent.map(str::to_string));
+                }
+                if let Some(found) = walk(&n.children, id, Some(&n.title)) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        walk(&self.roots, id, None).flatten()
+    }
+
+    /// Sites matching every word, with the folders they are filed under.
+    pub fn matches(&self, query: &str) -> Vec<(Bookmark, Vec<String>)> {
+        let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+        fn walk(nodes: &[Bookmark], path: &mut Vec<String>, words: &[String], out: &mut Vec<(Bookmark, Vec<String>)>) {
+            for n in nodes {
+                let hay = format!("{} {}", n.title, n.url.clone().unwrap_or_default()).to_lowercase();
+                if words.iter().all(|w| hay.contains(w)) {
+                    out.push((n.clone(), path.clone()));
+                }
+                if n.url.is_none() {
+                    path.push(n.title.clone());
+                    walk(&n.children, path, words, out);
+                    path.pop();
+                }
+            }
+        }
+        let mut out = vec![];
+        walk(&self.roots, &mut vec![], &words, &mut out);
+        out
+    }
+
+    /// Bring in every Chromium-family browser's bookmarks, folders and all.
+    /// Returns (browser, how many new) for each browser found.
+    pub fn bring_in(&mut self) -> Vec<(String, usize)> {
+        let config = store::config_dir().parent().map(PathBuf::from).unwrap_or_default();
         let sources = [
             ("Chromium", "chromium/Default/Bookmarks"),
             ("Google Chrome", "google-chrome/Default/Bookmarks"),
@@ -93,93 +182,46 @@ impl Bookmarks {
             ("Vivaldi", "vivaldi/Default/Bookmarks"),
             ("Microsoft Edge", "microsoft-edge/Default/Bookmarks"),
         ];
-        let mut report = Vec::new();
+        let mut report = vec![];
         for (name, rel) in sources {
-            let path = config.join(rel);
-            if let Some(found) = read_chromium(&path) {
-                let added = self.merge(found);
-                report.push((name.to_string(), added));
+            let Ok(bytes) = std::fs::read(config.join(rel)) else { continue };
+            let Ok(root) = serde_json::from_slice::<Value>(&bytes) else { continue };
+            let mut found = vec![];
+            if let Some(roots) = root.get("roots").and_then(Value::as_object) {
+                for node in roots.values() {
+                    self.convert(node, &mut found);
+                }
             }
+            let before = Self::count(&self.roots);
+            self.roots.push(Bookmark { id: fresh_id(), title: format!("From {name}"), url: None, children: found });
+            report.push((name.to_string(), Self::count(&self.roots) - before));
         }
         self.save();
         report
     }
 
-    fn merge(&mut self, found: Vec<Bookmark>) -> usize {
-        let mut added = 0;
-        for b in found {
-            if !self.contains(&b.url) {
-                self.items.push(b);
-                added += 1;
-            }
-        }
-        added
-    }
-}
-
-pub fn read_chromium(path: &Path) -> Option<Vec<Bookmark>> {
-    let bytes = std::fs::read(path).ok()?;
-    let root: Value = serde_json::from_slice(&bytes).ok()?;
-    let mut out = Vec::new();
-    if let Some(roots) = root.get("roots").and_then(Value::as_object) {
-        for node in roots.values() {
-            walk(node, "", &mut out);
-        }
-    }
-    Some(out)
-}
-
-fn walk(node: &Value, folder: &str, out: &mut Vec<Bookmark>) {
-    match node.get("type").and_then(Value::as_str) {
-        Some("url") => {
-            let url = node.get("url").and_then(Value::as_str).unwrap_or_default();
-            if url.starts_with("http://") || url.starts_with("https://") {
-                out.push(Bookmark {
-                    url: url.to_string(),
-                    title: node.get("name").and_then(Value::as_str).unwrap_or(url).to_string(),
-                    folder: folder.to_string(),
-                    added: crate::history::now(),
-                });
-            }
-        }
-        Some("folder") => {
-            let name = node.get("name").and_then(Value::as_str).unwrap_or_default();
-            let path = match (folder.is_empty(), name) {
-                (_, "Bookmarks bar" | "Other bookmarks" | "Mobile bookmarks") => folder.to_string(),
-                (true, n) => n.to_string(),
-                (false, n) => format!("{folder} / {n}"),
-            };
-            if let Some(children) = node.get("children").and_then(Value::as_array) {
-                for child in children {
-                    walk(child, &path, out);
+    fn convert(&self, node: &Value, out: &mut Vec<Bookmark>) {
+        let name = node.get("name").and_then(Value::as_str).unwrap_or_default().to_string();
+        match node.get("type").and_then(Value::as_str) {
+            Some("url") => {
+                let url = node.get("url").and_then(Value::as_str).unwrap_or_default();
+                if (url.starts_with("http://") || url.starts_with("https://")) && self.find(url).is_none() {
+                    out.push(Bookmark { id: fresh_id(), title: name, url: Some(url.into()), children: vec![] });
                 }
             }
+            Some("folder") => {
+                let mut kids = vec![];
+                for child in node.get("children").and_then(Value::as_array).into_iter().flatten() {
+                    self.convert(child, &mut kids);
+                }
+                // The bars Chromium keeps at the top are not folders you made.
+                if matches!(name.as_str(), "Bookmarks bar" | "Other bookmarks" | "Mobile bookmarks") {
+                    out.extend(kids);
+                } else if !kids.is_empty() {
+                    out.push(Bookmark { id: fresh_id(), title: name, url: None, children: kids });
+                }
+            }
+            _ => {}
         }
-        _ => {}
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn reads_chromium_file() {
-        let json = r#"{"roots":{"bookmark_bar":{"type":"folder","name":"Bookmarks bar","children":[
-            {"type":"url","name":"Arch","url":"https://archlinux.org/"},
-            {"type":"folder","name":"Dev","children":[{"type":"url","name":"Rust","url":"https://rust-lang.org/"},
-            {"type":"url","name":"js","url":"javascript:alert(1)"}]}]},
-            "other":{"type":"folder","name":"Other bookmarks","children":[]}}}"#;
-        let dir = std::env::temp_dir().join(format!("wisp-bm-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let file = dir.join("Bookmarks");
-        std::fs::write(&file, json).unwrap();
-        let found = read_chromium(&file).unwrap();
-        assert_eq!(found.len(), 2);
-        assert_eq!(found[1].folder, "Dev");
-        let mut b = Bookmarks::default();
-        assert_eq!(b.merge(found.clone()), 2);
-        assert_eq!(b.merge(found), 0);
-        let _ = std::fs::remove_dir_all(dir);
     }
 }

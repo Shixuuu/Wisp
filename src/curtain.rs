@@ -91,31 +91,13 @@ impl Curtain {
 
     /// The stylesheet for a site. Each selector stands alone in its own rule:
     /// one selector the engine can't parse would otherwise take the whole
-    /// list down with it.
-    pub fn css(&self, host: &str) -> String {
+    /// list down with it. `spared` is left out, to show what it hides.
+    pub fn css_without(&self, host: &str, spared: Option<&str>) -> String {
         self.veils(host)
             .iter()
+            .filter(|v| Some(v.selector.as_str()) != spared)
             .map(|v| format!("{} {{ display: none !important; }}", v.selector))
             .collect::<Vec<_>>()
             .join("\n")
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn css_per_selector() {
-        let mut c = Curtain::default();
-        c.by_host.insert(
-            "x.com".into(),
-            vec![
-                Veil { selector: "#a".into(), label: "A".into(), note: String::new(), date: 0 },
-                Veil { selector: ".b".into(), label: "B".into(), note: String::new(), date: 0 },
-            ],
-        );
-        assert_eq!(c.css("x.com"), "#a { display: none !important; }\n.b { display: none !important; }");
-        assert_eq!(c.css("y.com"), "");
     }
 }

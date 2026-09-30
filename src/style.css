@@ -1,108 +1,228 @@
-/* Wisp's frame: quiet greys that get out of the page's way. Colours come
-   from libadwaita's named colours, so light and dark (and any accent the
-   desktop picks) follow without this file knowing which is which. */
+/* Wisp, drawn as Search is: white ground, ink, and a handful of greys.
+   The colours are named here and defined in main.rs, one set for a light
+   window and one for a dark. Hover and fades take 140 ms, eased out. */
 
-window.wisp {
-  background-color: @window_bg_color;
-}
+window.wisp, .ground { background-color: @ground; color: @ink; }
 
-.wisp-sidebar {
-  padding: 6px 8px 8px 8px;
-  background-color: @sidebar_bg_color;
-}
+/* The column and the strip. */
+.side { background-color: @ground; border-right: 1px solid @hairline; }
+.side.right { border-right: none; border-left: 1px solid @hairline; }
+.strip { background-color: @ground; padding-right: 12px; }
+.peek > * { box-shadow: 4px 0 20px alpha(black, 0.14); }
+.foot { padding: 0 10px 10px 10px; min-height: 26px; }
+windowcontrols button { min-width: 22px; min-height: 22px; padding: 2px; }
 
-.wisp-topbar {
-  padding: 4px 6px;
-  background-color: @headerbar_bg_color;
-}
+.edge-line { min-width: 1px; background-color: transparent; transition: all 140ms ease-out; }
+.edge:hover .edge-line, .edge-line.held { min-width: 2px; background-color: alpha(@ink, 0.18); }
 
-.wisp-field {
-  min-height: 32px;
-  border-radius: 8px;
+/* One tab. libadwaita styles the class too; its ground and border go. */
+.tab {
+  background-color: transparent;
+  border: none;
+  padding: 0 10px;
+  min-height: 28px;
+  border-radius: 9px;
+  color: @muted;
+  font-size: 12.5px;
+  transition: background-color 140ms ease-out, color 140ms ease-out;
 }
+.tab:not(.side) { padding: 0 7px 0 11px; }
+.tab.compact, .tab.pinned { padding: 0; }
+.tab.hover:not(.live) { background-color: @hover; color: alpha(@ink, 0.7); }
+.tab.live { color: @ink; }
+.tab.pinned { background-color: alpha(@wash, 0.55); }
+.tab.pinned.hover:not(.live) { background-color: @hover; }
+.tab.pinned.live { background-color: transparent; }
+.tab .title { color: inherit; }
+.tab.asleep .letter, .tab.asleep .favicon, .tab.asleep .mark { opacity: 0.45; }
+.tab .shy { opacity: 0.7; }
+.tab-edit { font-size: 12.5px; color: @ink; }
+.tab-edit selection { background-color: alpha(@ink, 0.12); color: @ink; }
+.held { box-shadow: 0 3px 10px alpha(black, 0.16); }
 
-.wisp-field.private {
-  outline: 2px solid alpha(@accent_bg_color, 0.6);
-  outline-offset: -2px;
+.mark {
+  font-size: 8.5px;
+  font-weight: 500;
+  color: @muted;
+  background-color: alpha(@ink, 0.06);
+  border-radius: 3.5px;
+  min-width: 15px;
+  min-height: 15px;
 }
+.mark.letter { background: none; font-size: 12px; min-width: 0; }
+.tab.live .mark.letter { color: @ink; }
+.mark.big { font-size: 14.5px; min-width: 26px; min-height: 26px; border-radius: 6px; }
+.favicon { border-radius: 3px; }
 
-.wisp-tab {
-  padding: 5px 8px;
-  border-radius: 8px;
-  min-height: 22px;
-  transition: background-color 80ms ease-out;
-}
+.live-ground { background-color: @wash; border-radius: 9px; }
+.live-ground.pin { background-color: @pinlive; }
+.reading { background-color: alpha(@ink, 0.045); }
 
-.wisp-tabs.horizontal .wisp-tab,
-box.horizontal.wisp-tabs > .wisp-tab {
-  min-width: 140px;
+button.cross {
+  min-width: 15px; min-height: 15px; padding: 0; margin-right: 7px;
+  border-radius: 999px; background-color: alpha(@ink, 0.07); color: @muted; box-shadow: none;
 }
+button.cross image { -gtk-icon-size: 8px; }
+button.speaker { min-width: 15px; min-height: 15px; padding: 0; border-radius: 999px; background: none; color: @muted; box-shadow: none; }
+button.speaker:hover { background-color: alpha(@ink, 0.07); }
+button.speaker image { -gtk-icon-size: 9px; }
 
-.wisp-tab:hover {
-  background-color: alpha(currentColor, 0.06);
+button.door, menubutton.door > button {
+  min-width: 26px; min-height: 26px; padding: 0; border-radius: 8px;
+  background: none; color: @muted; box-shadow: none;
+  transition: background-color 140ms ease-out, color 140ms ease-out;
 }
+button.door:hover, menubutton.door > button:hover { background-color: @hover; color: alpha(@ink, 0.7); }
+button.door image, menubutton.door image { -gtk-icon-size: 14px; }
+button.plus { min-width: 29px; min-height: 27px; padding: 0; border-radius: 9px; background: none; color: @muted; box-shadow: none; }
+button.plus:hover { background-color: @hover; }
+button.plus image { -gtk-icon-size: 10px; }
 
-.wisp-tab.current {
-  background-color: alpha(currentColor, 0.11);
+button.quiet {
+  min-height: 28px; padding: 0 0 0 10px; border-radius: 9px;
+  background: none; color: @faint; font-size: 12.5px; font-weight: normal; box-shadow: none;
+  transition: background-color 140ms ease-out, color 140ms ease-out;
 }
+button.quiet:hover { background-color: @hover; color: alpha(@ink, 0.7); }
 
-.wisp-tab.asleep label {
-  opacity: 0.6;
+/* The address field. */
+.dim-page { background-color: alpha(@ground, 0.74); }
+.breath { border-radius: 14px; box-shadow: 0 0 26px 1px alpha(@ink, 0.07); }
+.field {
+  background-color: @ground;
+  border: 1px solid @hairline;
+  border-radius: 14px;
+  padding: 14px 22px;
+  box-shadow: 0 8px 24px alpha(black, 0.06);
+  transition: border-color 140ms ease-out;
 }
+.field.refused { border-color: rgba(255, 0, 0, 0.35); }
+.address { font-size: 15.5px; color: @ink; min-height: 22px; caret-color: @ink; }
+.address selection { background-color: alpha(@ink, 0.12); color: @ink; }
+text > placeholder, .address > placeholder { color: alpha(@ink, 0.3); }
+.offers {
+  background-color: @ground; border: 1px solid @hairline; border-radius: 14px;
+  padding: 6px; box-shadow: 0 6px 20px alpha(black, 0.07);
+}
+.offer { padding: 9px 12px; border-radius: 9px; transition: background-color 140ms ease-out; }
+.offer:hover { background-color: @hover; }
+.offer.picked { background-color: @wash; }
+.offer-key { font-size: 13px; color: @ink; }
+.offer-title { font-size: 12px; color: @muted; }
+.open-dot { min-width: 5px; min-height: 5px; border-radius: 999px; background-color: alpha(@ink, 0.55); margin: 0 2px; }
+.muted { color: @muted; }
+.muted-text { color: @muted; font-size: 12.5px; }
 
-.wisp-tab.private .favicon {
-  color: @accent_color;
+/* What rises from the bottom, and floats over the page. */
+.capsule {
+  background-color: @ground; border: 1px solid @hairline; border-radius: 999px;
+  padding: 9px 15px; box-shadow: 0 6px 18px alpha(black, 0.10); color: @ink;
 }
+.said { font-size: 12px; }
+button.said-link { background: none; box-shadow: none; color: @muted; padding: 0; min-height: 0; font-size: 12px; font-weight: normal; }
+.ask { padding: 9px 10px 9px 16px; }
+.ask-text { font-size: 12.5px; }
+button.ink-pill { background-color: @ink; color: @ground; border-radius: 999px; padding: 5px 11px; font-size: 12px; min-height: 0; box-shadow: none; }
+.hint { background-color: alpha(@ink, 0.92); color: alpha(@ground, 0.92); border-color: transparent; font-size: 11.5px; box-shadow: 0 6px 18px alpha(black, 0.18); }
+.bubble { padding: 0 11px; min-height: 26px; font-size: 12px; box-shadow: 0 3px 12px alpha(black, 0.08); }
+.find { padding: 8px 8px 8px 16px; box-shadow: 0 5px 18px alpha(black, 0.10); }
+.find.missed { border-color: rgba(255, 0, 0, 0.35); }
+.needle { font-size: 12.5px; color: @ink; }
+.find-status { font-size: 10px; font-weight: 500; color: @muted; font-feature-settings: "tnum"; }
+.find.missed .find-status { color: rgba(220, 0, 0, 0.8); }
+button.find-step, menubutton.find-step > button { min-width: 24px; min-height: 24px; padding: 0; background: none; box-shadow: none; color: @muted; }
+button.find-step image, menubutton.find-step image { -gtk-icon-size: 10px; }
+.trouble { font-size: 14px; color: @ink; }
+button.plain-link { background: none; box-shadow: none; color: @muted; font-size: 12px; font-weight: normal; }
 
-.wisp-tab .tab-close {
-  min-width: 20px;
-  min-height: 20px;
-  padding: 0;
-  opacity: 0;
+/* The panels. */
+.dim-window { background-color: alpha(black, 0.10); }
+.plate {
+  background-color: @ground; border: 1px solid @hairline; border-radius: 16px;
+  box-shadow: 0 12px 34px alpha(black, 0.16); color: @ink;
 }
+.plate-head { padding: 18px 22px 14px 22px; }
+.plate-title { font-size: 17px; font-weight: 600; color: @ink; }
+.plate-content { padding: 0 22px; }
+.plate-foot { padding: 14px 22px; }
+.card { background-color: @ground; border: 1px solid @hairline; border-radius: 11px; }
+.rule { min-height: 1px; background-color: @hairline; }
+.line { padding: 11px 14px; }
+.line-title { font-size: 13px; color: @ink; }
+.line-detail { font-size: 11.5px; color: @muted; }
+.caption-text { font-size: 11.5px; font-weight: 500; color: @muted; margin-left: 2px; }
+.hunt { background-color: @wash; border-radius: 10px; padding: 8px 12px; font-size: 13px; }
+.nothing { font-size: 13px; color: @muted; padding: 18px 14px; }
+.list-row { padding: 9px 14px; transition: background-color 140ms ease-out; }
+.list-row:hover { background-color: @hover; }
+.list-row.gone .row-title { color: @faint; }
+.row-title { font-size: 13px; color: @ink; }
+.row-sub { font-size: 11.5px; color: @muted; }
+.time { font-size: 11.5px; color: @muted; font-feature-settings: "tnum"; }
+.foot-text { font-size: 12px; color: @muted; }
+button.quick {
+  font-size: 11.5px; font-weight: normal; padding: 4px 8px; min-height: 0;
+  background-color: @wash; border-radius: 999px; color: @ink; box-shadow: none;
+}
+button.quick.red { color: rgba(255, 59, 48, 0.75); }
+button.pill, menubutton.pill > button {
+  font-size: 11.5px; font-weight: normal; padding: 5px 10px; min-height: 0;
+  border-radius: 999px; background-color: @ground; border: 1px solid @hairline; color: @ink; box-shadow: none;
+  transition: background-color 140ms ease-out;
+}
+button.pill:hover, menubutton.pill > button:hover { background-color: @hover; }
+button.pill.filled { background-color: @ink; color: @ground; border-color: transparent; }
+button.switch {
+  min-width: 30px; min-height: 18px; padding: 0; border-radius: 999px;
+  background-color: @faint; box-shadow: none; transition: background-color 200ms ease-out;
+}
+button.switch.on { background-color: @ink; }
+.knob { min-width: 14px; min-height: 14px; margin: 2px; border-radius: 999px; background-color: @ground; box-shadow: 0 1px 1.5px alpha(black, 0.18); }
+.segmented { background-color: @wash; border-radius: 9px; padding: 2px; }
+button.segment {
+  font-size: 11.5px; font-weight: normal; padding: 5px 10px; min-height: 0;
+  background: none; color: @muted; border-radius: 7px; box-shadow: none;
+}
+button.segment.on { color: @ink; font-weight: 500; }
+.chosen { background-color: @ground; border-radius: 7px; box-shadow: 0 1px 3px alpha(black, 0.08); }
+.steps { border: 1px solid @hairline; border-radius: 999px; padding: 0 2px; min-height: 24px; }
+button.step { min-width: 20px; min-height: 20px; padding: 0; border-radius: 999px; background: none; box-shadow: none; color: @ink; }
+button.step:hover { background-color: @hover; }
+button.step image { -gtk-icon-size: 9px; }
+button.step-value { min-width: 36px; font-size: 11.5px; font-weight: normal; background: none; box-shadow: none; padding: 0 4px; min-height: 0; }
+.keybox { font-size: 11px; font-weight: 500; color: @muted; border: 1px solid @hairline; border-radius: 5px; padding: 1px 6px; }
+.thin trough { min-height: 3px; border-radius: 999px; background-color: @hairline; }
+.thin progress { min-height: 3px; border-radius: 999px; background-color: alpha(@ink, 0.6); }
 
-.wisp-tab:hover .tab-close,
-.wisp-tab.current .tab-close {
-  opacity: 0.7;
+/* Settings. */
+.settings { min-width: 660px; min-height: 500px; }
+.rail { background-color: alpha(@wash, 0.45); padding: 8px; min-width: 168px; border-right: 1px solid @hairline; border-radius: 16px 0 0 16px; }
+.rail-title { font-size: 13px; font-weight: 600; color: @ink; padding: 14px 10px 12px 10px; }
+button.rail-row {
+  min-height: 30px; padding: 0 10px; border-radius: 8px; background: none; box-shadow: none;
+  color: @muted; font-size: 13px; font-weight: normal; transition: background-color 140ms ease-out;
 }
+button.rail-row:hover { background-color: @hover; color: alpha(@ink, 0.75); }
+button.rail-row.on { background-color: @ground; color: @ink; font-weight: 500; box-shadow: 0 1px 3px alpha(black, 0.06); }
+.settings-body { padding: 18px 22px; }
 
-.wisp-tab.pinned {
-  padding: 8px;
-  background-color: alpha(currentColor, 0.05);
-}
+/* Bookmarks. */
+button.outline { background: none; box-shadow: none; padding: 0; border-radius: 8px; min-height: 28px; font-weight: normal; font-size: 12.5px; color: @ink; }
+button.outline:hover { background-color: @wash; }
+.outline-row { padding: 0 8px; }
+popover.wisp-pop > contents { padding: 0; border-radius: 14px; border: 1px solid @hairline; background-color: @ground; box-shadow: 0 6px 20px alpha(black, 0.10); }
+.dropdown { min-width: 280px; }
+.card-pop { padding: 14px; }
+.card-title { font-size: 13px; font-weight: 600; color: @ink; }
+.wash-field, menubutton.wash-field > button { background-color: @wash; border-radius: 8px; padding: 5px 8px; font-size: 12.5px; min-height: 0; box-shadow: none; color: @ink; font-weight: normal; }
+button.foot-row { background: none; box-shadow: none; padding: 6px 10px; border-radius: 8px; font-size: 12.5px; font-weight: normal; min-height: 0; color: @ink; }
+button.foot-row:hover { background-color: @wash; }
 
-.wisp-tab.pinned.current {
-  background-color: alpha(currentColor, 0.13);
-}
-
-.wisp-pins flowboxchild {
-  padding: 0;
-}
-
-.wisp-progress trough,
-.wisp-progress progress {
-  min-height: 2px;
-}
-
-.wisp-status {
-  margin: 0 0 6px 6px;
-  padding: 3px 8px;
-  border-radius: 6px;
-  font-size: 0.85em;
-  background-color: alpha(@view_bg_color, 0.95);
-  color: @view_fg_color;
-  box-shadow: 0 1px 3px alpha(black, 0.18);
-}
-
-.wisp-find {
-  padding: 6px 8px;
-  border-bottom: 1px solid alpha(currentColor, 0.1);
-}
-
-.wisp-suggestions {
-  background: none;
-}
-
-.wisp-suggestion {
-  padding: 6px 8px;
-}
+/* The tab switcher. */
+.dim-switcher { background-color: alpha(black, 0.12); }
+.switcher { background-color: @ground; border: 1px solid @hairline; border-radius: 12px; padding: 12px; }
+.switch-ground { background-color: @faint; border-radius: 8px; }
+button.switch-button { background: none; box-shadow: none; padding: 0; border-radius: 8px; }
+.switch-card { padding: 8px; }
+.switch-picture { background-color: @hover; border-radius: 5px; }
+.switch-caption { font-size: 11.5px; color: @ink; }

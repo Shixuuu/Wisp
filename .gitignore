@@ -3,3 +3,4 @@
 /packaging/arch/pkg
 /packaging/arch/*.pkg.tar.*
 /packaging/arch/wisp
+__pycache__/

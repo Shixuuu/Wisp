@@ -1,339 +1,679 @@
-//! The one field. Type an address and you go there; type words and you search.
-//! It suggests from your open tabs, bookmarks and history, finishes addresses
-//! inline as you type, and sends nothing anywhere until you press Enter.
+//! One field, in the middle of the page, and the few places it thinks you
+//! mean. Raised over a page by Ctrl+L, standing on its own on a blank tab,
+//! and, with Ctrl+K, a list of what is open and nothing else.
 
 use crate::address;
 use crate::browser::Browser;
-use gtk::prelude::*;
+use crate::motion::{self, Curve, Slide, Tween};
+use adw::prelude::*;
 use gtk::{gdk, glib, pango};
-use std::rc::Rc;
+use std::cell::{Cell, RefCell};
+use std::rc::{Rc, Weak};
+use std::time::Duration;
 
-/// What choosing a suggestion does.
-#[derive(Clone, Debug)]
-pub enum Pick {
-    Go(String),
-    SwitchTo(u64),
-    Search(String),
+#[derive(Clone, Debug, PartialEq)]
+enum Kind {
+    Place,
+    Search,
+    Open(u64),
+    Command(&'static str),
 }
 
-const LIMIT: usize = 7;
+#[derive(Clone, Debug)]
+struct Offer {
+    key: String,
+    title: String,
+    url: String,
+    kind: Kind,
+}
 
-impl Browser {
-    /// Show the current page's address, unless you are typing in the field.
-    pub fn show_address(&self) {
-        if self.field.has_focus() && !self.field_typed.borrow().is_empty() {
-            return;
-        }
-        let url = self.current.borrow().as_ref().map(|t| t.url.borrow().clone()).unwrap_or_default();
-        let shown = if url.is_empty() || url == "about:blank" { String::new() } else { address::editable(&url) };
-        self.set_field_quietly(&shown);
-        if let Some(tab) = self.current.borrow().as_ref() {
-            if tab.private {
-                self.field.add_css_class("private");
-            } else {
-                self.field.remove_css_class("private");
+/// Words that, typed alone, go somewhere (Settings › General › Address bar
+/// commands).
+const COMMANDS: &[(&str, &str)] = &[
+    ("settings", "win.settings"),
+    ("preferences", "win.settings"),
+    ("new tab", "win.new-tab"),
+    ("new private tab", "win.new-private-tab"),
+    ("private tab", "win.new-private-tab"),
+    ("bookmarks", "win.bookmarks"),
+    ("history", "win.history"),
+    ("downloads", "win.downloads"),
+    ("toggle sidebar", "win.toggle-sidebar"),
+    ("sidebar", "win.toggle-sidebar"),
+];
+
+pub struct Omnibox {
+    b: Weak<Browser>,
+    place: motion::Place,
+    dim: gtk::Box,
+    shaker: Slide,
+    frame: gtk::Box,
+    pub text: gtk::Text,
+    list: gtk::Box,
+    list_presence: motion::Presence,
+    shown: Tween,
+    offers: RefCell<Vec<Offer>>,
+    picked: Cell<Option<usize>>,
+    typed: RefCell<String>,
+    ending: RefCell<Option<String>>,
+    editing: Cell<bool>,
+    summoning: Cell<bool>,
+    pub cycling: Cell<bool>,
+    quiet: Cell<bool>,
+    deleting: Cell<bool>,
+    glow: gtk::Box,
+    breathing: RefCell<Option<glib::SourceId>>,
+}
+
+impl Omnibox {
+    pub fn new(b: &Rc<Browser>) -> Rc<Omnibox> {
+        let dim = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        dim.add_css_class("dim-page");
+        dim.set_hexpand(true);
+        dim.set_vexpand(true);
+
+        let text = crate::text_box("Address");
+        text.set_placeholder_text(Some("Enter a web address"));
+        text.add_css_class("address");
+        text.set_hexpand(true);
+        text.set_input_purpose(gtk::InputPurpose::Url);
+        let frame = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        frame.add_css_class("field");
+        frame.append(&text);
+        // The glow behind the field, breathing slowly while it is up.
+        let glow = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        glow.add_css_class("breath");
+        let breath = gtk::Overlay::new();
+        breath.set_child(Some(&glow));
+        breath.add_overlay(&frame);
+        breath.set_measure_overlay(&frame, true);
+        let shaker = Slide::new(&breath);
+
+        let list = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        list.add_css_class("offers");
+        let list_presence = motion::Presence::new(&list, 0.98, 0.0);
+        list_presence.slide.set_anchor(0.5, 0.0);
+        list_presence.root.set_valign(gtk::Align::Start);
+        list_presence.root.set_margin_top(8);
+
+        let center = gtk::CenterBox::new();
+        center.set_orientation(gtk::Orientation::Vertical);
+        center.set_center_widget(Some(&shaker));
+        center.set_end_widget(Some(&list_presence.root));
+        center.set_start_widget(Some(&gtk::Box::new(gtk::Orientation::Vertical, 0)));
+        center.set_size_request(560, -1);
+        center.set_halign(gtk::Align::Center);
+        // Lifted a little above centre: dead centre reads as low.
+        center.set_margin_bottom(60);
+        let column = Slide::new(&center);
+        column.set_halign(gtk::Align::Center);
+
+        let layer = gtk::Overlay::new();
+        layer.set_child(Some(&dim));
+        layer.add_overlay(&column);
+        layer.set_vexpand(true);
+        let place = motion::Place::new(&layer);
+        b.page.add_overlay(&place.root);
+
+        let (d, c, p) = (dim.clone(), column.clone(), place.clone());
+        let shown = Tween::new(&layer, 0.0, move |t| {
+            if t <= 0.001 {
+                p.settle();
             }
-        }
-    }
-
-    fn set_field_quietly(&self, text: &str) {
-        self.field_quiet.set(true);
-        self.field.set_text(text);
-        self.field_quiet.set(false);
-    }
-
-    pub fn focus_field(&self) {
-        self.field.grab_focus();
-        self.field.select_region(0, -1);
-    }
-
-    pub fn wire_field(self: &Rc<Self>) {
-        let weak = self.weak();
-        self.field.connect_changed(move |field| {
-            let Some(b) = weak.upgrade() else { return };
-            if b.field_quiet.get() {
-                return;
-            }
-            let text = field.text().to_string();
-            let before = b.field_typed.replace(text.clone());
-            // Finish the address only when you added to the end: never while
-            // you are deleting, or it would put back what you just took out.
-            let grew = text.len() > before.len() && text.starts_with(before.as_str());
-            b.suggest(&text, grew);
+            d.set_opacity(t.clamp(0.0, 1.0));
+            c.set_opacity(t.clamp(0.0, 1.0));
+            c.set_scale(0.97 + 0.03 * t);
         });
 
-        let weak = self.weak();
-        self.field.connect_activate(move |field| {
-            let Some(b) = weak.upgrade() else { return };
-            let chosen = b
-                .suggestion_list
-                .selected_row()
-                .filter(|_| b.suggestions.is_visible())
-                .and_then(|row| b.suggestion_urls.borrow().get(row.index() as usize).cloned());
-            let text = field.text().to_string();
-            b.close_suggestions();
-            b.field_typed.replace(String::new());
-            match chosen {
-                Some(pick) => b.choose(pick),
-                None => b.navigate(&text),
+        let field = Rc::new(Omnibox {
+            b: b.weak(),
+            place,
+            dim,
+            shaker,
+            frame,
+            text,
+            list,
+            list_presence,
+            shown,
+            offers: RefCell::default(),
+            picked: Cell::new(None),
+            typed: RefCell::default(),
+            ending: RefCell::default(),
+            editing: Cell::new(false),
+            summoning: Cell::new(false),
+            cycling: Cell::new(false),
+            quiet: Cell::new(false),
+            deleting: Cell::new(false),
+            glow,
+            breathing: RefCell::default(),
+        });
+        field.wire();
+        field
+    }
+
+    fn browser(&self) -> Option<Rc<Browser>> {
+        self.b.upgrade()
+    }
+
+    fn wire(self: &Rc<Self>) {
+        let me = Rc::downgrade(self);
+        self.text.connect_changed(move |t| {
+            let Some(me) = me.upgrade() else { return };
+            if me.quiet.get() {
+                return;
+            }
+            *me.typed.borrow_mut() = t.text().to_string();
+            me.frame.remove_css_class("refused");
+            if me.deleting.replace(false) {
+                me.ending.take();
+                me.guess();
+                me.ending.take();
+                return;
+            }
+            me.guess();
+            let ending = me.ending.borrow().clone();
+            if let Some(ending) = ending.filter(|e| !e.is_empty()) {
+                // After GTK has finished the keystroke, and only if nothing
+                // else was typed since.
+                let me = me.clone();
+                let typed = me.typed.borrow().clone();
+                glib::idle_add_local_once(move || {
+                    if me.text.text() != typed.as_str() {
+                        return;
+                    }
+                    me.set_text(&format!("{typed}{ending}"));
+                    me.text.select_region(typed.chars().count() as i32, -1);
+                });
+            }
+        });
+
+        let me = Rc::downgrade(self);
+        self.text.connect_activate(move |_| {
+            if let Some(me) = me.upgrade() {
+                me.submit(false, false);
             }
         });
 
         let keys = gtk::EventControllerKey::new();
         keys.set_propagation_phase(gtk::PropagationPhase::Capture);
-        let weak = self.weak();
-        keys.connect_key_pressed(move |_, key, _, _| {
-            let Some(b) = weak.upgrade() else { return glib::Propagation::Proceed };
+        let me = Rc::downgrade(self);
+        keys.connect_key_pressed(move |_, key, _, mods| {
+            let Some(me) = me.upgrade() else { return glib::Propagation::Proceed };
+            let ctrl = mods.contains(gdk::ModifierType::CONTROL_MASK);
             match key {
-                gdk::Key::Down | gdk::Key::Up if b.suggestions.is_visible() => {
-                    b.move_selection(if key == gdk::Key::Down { 1 } else { -1 });
-                    glib::Propagation::Stop
-                }
-                gdk::Key::Escape => {
-                    if b.suggestions.is_visible() {
-                        b.close_suggestions();
-                    } else {
-                        // Put back the page's address and hand the keys back
-                        // to the page.
-                        b.field_typed.replace(String::new());
-                        b.show_address();
-                        if let Some(v) = b.current_view() {
-                            v.grab_focus();
-                        }
+                gdk::Key::Down => me.walk(1),
+                gdk::Key::Up => me.walk(-1),
+                gdk::Key::Tab | gdk::Key::ISO_Left_Tab if !ctrl => {
+                    if me.ending.borrow().is_some() && key == gdk::Key::Tab {
+                        me.accept_ending();
+                    } else if !me.offers.borrow().is_empty() {
+                        me.walk(if key == gdk::Key::Tab { 1 } else { -1 });
                     }
-                    glib::Propagation::Stop
                 }
-                _ => glib::Propagation::Proceed,
+                gdk::Key::Right
+                    if me.ending.borrow().is_some()
+                        && me.text.position() >= me.typed.borrow().chars().count() as i32 =>
+                {
+                    me.accept_ending()
+                }
+                gdk::Key::BackSpace | gdk::Key::Delete => {
+                    me.deleting.set(true);
+                    return glib::Propagation::Proceed;
+                }
+                gdk::Key::Return | gdk::Key::KP_Enter if ctrl => {
+                    me.submit(true, mods.contains(gdk::ModifierType::SHIFT_MASK))
+                }
+                _ => return glib::Propagation::Proceed,
             }
+            glib::Propagation::Stop
         });
-        self.field.add_controller(keys);
+        self.text.add_controller(keys);
 
-        let focus = gtk::EventControllerFocus::new();
-        let weak = self.weak();
-        focus.connect_enter(move |_| {
-            if let Some(b) = weak.upgrade() {
-                let field = b.field.clone();
-                glib::idle_add_local_once(move || field.select_region(0, -1));
+        let click = gtk::GestureClick::new();
+        let me = Rc::downgrade(self);
+        click.connect_released(move |_, _, _, _| {
+            if let Some(me) = me.upgrade() {
+                me.dismiss();
             }
         });
-        let weak = self.weak();
-        focus.connect_leave(move |_| {
-            if let Some(b) = weak.upgrade() {
-                b.close_suggestions();
-                b.field_typed.replace(String::new());
-                b.show_address();
-            }
-        });
-        self.field.add_controller(focus);
+        self.dim.add_controller(click);
+    }
 
-        let weak = self.weak();
-        self.suggestion_list.connect_row_activated(move |_, row| {
-            let Some(b) = weak.upgrade() else { return };
-            let pick = b.suggestion_urls.borrow().get(row.index() as usize).cloned();
-            b.close_suggestions();
-            b.field_typed.replace(String::new());
-            if let Some(pick) = pick {
-                b.choose(pick);
-            }
+    fn set_text(&self, text: &str) {
+        self.quiet.set(true);
+        self.text.set_text(text);
+        self.quiet.set(false);
+    }
+
+    pub fn typed(&self) -> String {
+        self.typed.borrow().clone()
+    }
+
+    pub fn showing(&self) -> bool {
+        self.shown.target() > 0.5
+    }
+
+    pub fn summoning(&self) -> bool {
+        self.summoning.get()
+    }
+
+    /// Put the field up, over the page or on its own.
+    fn show(&self, over: bool) {
+        // Not hidden: a hidden widget throws off GTK 4.14's accessibility tree.
+        if over {
+            self.dim.add_css_class("dim-page");
+        } else {
+            self.dim.remove_css_class("dim-page");
+        }
+        self.dim.set_can_target(over);
+        self.place.show(true);
+        self.shown.to(1.0, Curve::Settle);
+        self.breathe(true);
+        let text = self.text.clone();
+        glib::idle_add_local_once(move || {
+            text.grab_focus_without_selecting();
         });
     }
 
-    fn close_suggestions(&self) {
-        self.suggestions.popdown();
-    }
-
-    fn move_selection(&self, by: i32) {
-        let count = self.suggestion_urls.borrow().len() as i32;
-        if count == 0 {
+    /// 2.6 s in, 2.6 s out. Stepped a dozen times a second rather than every
+    /// frame: a glow that never rests would keep GTK drawing without pause,
+    /// and its idle work, the accessibility tree among it, would wait forever.
+    fn breathe(&self, on: bool) {
+        if let Some(id) = self.breathing.take() {
+            id.remove();
+        }
+        if !on {
             return;
         }
-        let at = self.suggestion_list.selected_row().map(|r| r.index()).unwrap_or(-1);
-        let next = (at + by).rem_euclid(count);
-        if let Some(row) = self.suggestion_list.row_at_index(next) {
-            self.suggestion_list.select_row(Some(&row));
-        }
-    }
-
-    /// Go to what was typed: an address if it is one, a search if it isn't.
-    pub fn navigate(self: &Rc<Self>, typed: &str) {
-        let typed = typed.trim();
-        if typed.is_empty() {
-            return;
-        }
-        let target = match address::url_from(typed) {
-            Some(url) => url.to_string(),
-            None => self.prefs.borrow().search_url(typed),
+        let glow = self.glow.clone();
+        let start = std::time::Instant::now();
+        let tick = move || {
+            let phase = (start.elapsed().as_secs_f64() / 2.6) % 2.0;
+            let t = if phase > 1.0 { 2.0 - phase } else { phase };
+            let eased = 0.5 - (t * std::f64::consts::PI).cos() / 2.0;
+            glow.set_opacity(0.64 + 0.36 * eased);
         };
-        self.go(&target);
+        tick();
+        *self.breathing.borrow_mut() = Some(glib::timeout_add_local(Duration::from_millis(80), move || {
+            tick();
+            glib::ControlFlow::Continue
+        }));
     }
 
-    fn choose(self: &Rc<Self>, pick: Pick) {
-        match pick {
-            Pick::Go(url) => self.go(&url),
-            Pick::Search(words) => {
-                let url = self.prefs.borrow().search_url(&words);
-                self.go(&url);
-            }
-            Pick::SwitchTo(id) => {
-                // Leave an empty tab behind rather than keep it around.
-                let empty = self.current.borrow().as_ref().filter(|t| t.url.borrow().is_empty()).map(|t| t.id);
-                if let Some(tab) = self.tab_by_id(id) {
-                    self.select(&tab);
-                }
-                if let Some(empty) = empty.filter(|e| *e != id) {
-                    self.close_tab(empty);
-                }
-            }
+    fn hide(&self) {
+        self.breathe(false);
+        self.place.release();
+        self.shown.to(0.0, Curve::Quick);
+        self.list_presence.show(false);
+        if let Some(b) = self.browser()
+            && let Some(v) = b.active().and_then(|t| t.view.borrow().clone())
+        {
+            v.grab_focus();
         }
     }
 
-    fn suggest(self: &Rc<Self>, text: &str, complete: bool) {
-        let typed = text.trim();
-        if typed.is_empty() {
-            self.close_suggestions();
-            return;
+    /// A tab came forward: a blank one shows the field with what was typed
+    /// there before; any other puts it away.
+    pub fn follow(&self, tab: &crate::tab::Tab) {
+        self.editing.set(false);
+        self.summoning.set(false);
+        self.cycling.set(false);
+        self.frame.remove_css_class("refused");
+        if tab.is_blank() {
+            let draft = tab.draft.borrow().clone();
+            *self.typed.borrow_mut() = draft.clone();
+            self.set_text(&draft);
+            self.offers.borrow_mut().clear();
+            self.render();
+            self.show(false);
+            self.text.set_position(-1);
+        } else {
+            self.typed.borrow_mut().clear();
+            self.set_text("");
+            self.hide();
         }
-        let lower = typed.to_lowercase();
-        let mut rows: Vec<(String, String, &'static str, Pick)> = Vec::new();
+    }
 
-        // Open tabs first: going back to a page you have is better than
-        // opening it twice.
-        let current = self.current.borrow().as_ref().map(|t| t.id);
-        for tab in self.tabs.borrow().iter() {
-            if Some(tab.id) == current {
-                continue;
-            }
-            let url = tab.url.borrow().clone();
-            let name = tab.name();
-            if name.to_lowercase().contains(&lower) || url.to_lowercase().contains(&lower) {
-                rows.push((
-                    name,
-                    format!("Switch to tab · {}", address::pretty(&url)),
-                    "view-dual-symbolic",
-                    Pick::SwitchTo(tab.id),
-                ));
-            }
-            if rows.len() >= 2 {
-                break;
-            }
-        }
-
-        let history = self.history.borrow().suggestions(typed, LIMIT);
-        let completion = if complete { self.history.borrow().completion(typed, &history) } else { None };
-
-        let open_pages: Vec<String> =
-            self.tabs.borrow().iter().map(|t| crate::history::identity(&t.url.borrow())).collect();
-        let seen = |rows: &[(String, String, &'static str, Pick)], url: &str| {
-            let key = crate::history::identity(url);
-            open_pages.contains(&key)
-                || rows.iter().any(|r| matches!(&r.3, Pick::Go(u) if crate::history::identity(u) == key))
-        };
-        for b in self.bookmarks.borrow().matching(typed).into_iter().take(2) {
-            if !seen(&rows, &b.url) {
-                rows.push((b.title.clone(), address::pretty(&b.url), "starred-symbolic", Pick::Go(b.url)));
-            }
-        }
-        for s in &history {
-            if seen(&rows, &s.url) {
-                continue;
-            }
-            let title = if s.title.is_empty() { s.shown.clone() } else { s.title.clone() };
-            rows.push((title, s.shown.clone(), "document-open-recent-symbolic", Pick::Go(s.url.clone())));
-        }
-        rows.truncate(LIMIT);
-
-        // Keep what was typed and add the rest of the address, selected, so
-        // the next key either accepts it (Enter) or replaces it.
-        let completed = completion.and_then(|done| {
-            let shown = if text.to_lowercase().starts_with("www.") { format!("www.{done}") } else { done };
-            let rest = shown.get(text.len()..)?;
-            shown.to_lowercase().starts_with(&text.to_lowercase()).then(|| format!("{text}{rest}"))
+    /// Ctrl+L. The address comes up selected, so typing replaces it.
+    pub fn edit(&self) {
+        let Some(b) = self.browser() else { return };
+        let Some(tab) = b.active() else { return };
+        self.summoning.set(false);
+        self.editing.set(true);
+        let url = tab.address();
+        *self.typed.borrow_mut() = url.clone();
+        self.set_text(&url);
+        self.offers.borrow_mut().clear();
+        self.ending.take();
+        self.picked.set(None);
+        self.render();
+        self.show(!tab.is_blank());
+        let text = self.text.clone();
+        glib::idle_add_local_once(move || {
+            text.grab_focus();
+            text.select_region(0, -1);
         });
+    }
 
-        // What Enter does, always first.
-        let target = completed.as_deref().unwrap_or(typed);
-        let first = match address::url_from(target) {
-            Some(url) => {
-                (target.to_string(), "Go to address".to_string(), "go-next-symbolic", Pick::Go(url.to_string()))
-            }
-            None => {
-                let prefs = self.prefs.borrow();
-                match prefs.keyword_match(typed) {
-                    Some((k, rest)) => (
-                        rest.to_string(),
-                        format!("Search {}", address::bare_host(&k.template).unwrap_or_default()),
-                        "system-search-symbolic",
-                        Pick::Search(typed.to_string()),
-                    ),
-                    None => (
-                        typed.to_string(),
-                        format!("Search {}", prefs.engine.name()),
-                        "system-search-symbolic",
-                        Pick::Search(typed.to_string()),
-                    ),
+    /// Ctrl+K. Only what is open, the most recent first, already picked.
+    pub fn summon(&self) {
+        let Some(b) = self.browser() else { return };
+        let over = b.active().is_some_and(|t| !t.is_blank());
+        self.summoning.set(true);
+        self.editing.set(true);
+        self.typed.borrow_mut().clear();
+        self.set_text("");
+        self.guess();
+        self.show(over);
+    }
+
+    /// Ctrl+K again with Ctrl still down: one step further down the list.
+    pub fn step_summon(&self) {
+        self.cycling.set(true);
+        self.walk(1);
+    }
+
+    /// Ctrl let go of: take wherever the walk stopped.
+    pub fn land(&self) {
+        if self.cycling.replace(false) && self.picked.get().is_some() {
+            self.submit(false, false);
+        }
+    }
+
+    /// Escape: the list first, then the field. True when it did something.
+    pub fn escape(&self) -> bool {
+        let Some(b) = self.browser() else { return false };
+        let Some(tab) = b.active() else { return false };
+        if !self.showing() {
+            return false;
+        }
+        if self.picked.get().is_some() {
+            self.picked.set(None);
+            self.set_text(&self.typed());
+            self.render();
+            return true;
+        }
+        if tab.is_blank() {
+            // A new tab never sent anywhere: Escape takes it away, back to
+            // the tab touched last.
+            if self.typed.borrow().is_empty() {
+                let back = b.tabs.borrow().iter().filter(|t| t.id != tab.id).max_by_key(|t| t.touched.get()).cloned();
+                if let Some(back) = back {
+                    b.select(&back);
+                    b.close(&tab);
+                    return true;
                 }
+            }
+            return false;
+        }
+        self.dismiss();
+        true
+    }
+
+    pub fn dismiss(&self) {
+        let blank = self.browser().and_then(|b| b.active()).is_none_or(|t| t.is_blank());
+        self.summoning.set(false);
+        self.cycling.set(false);
+        if blank {
+            return;
+        }
+        self.editing.set(false);
+        self.typed.borrow_mut().clear();
+        self.hide();
+    }
+
+    fn accept_ending(&self) {
+        if let Some(ending) = self.ending.take() {
+            let full = format!("{}{ending}", self.typed.borrow());
+            *self.typed.borrow_mut() = full.clone();
+            self.set_text(&full);
+            self.text.set_position(-1);
+            self.guess();
+            self.ending.take();
+        }
+    }
+
+    /// The arrow keys walk the list; walking off the top lets go of it.
+    fn walk(&self, step: isize) {
+        let n = self.offers.borrow().len() as isize;
+        if n == 0 {
+            return;
+        }
+        let next = match self.picked.get() {
+            None => Some(if step > 0 { 0 } else { n - 1 }),
+            Some(here) => {
+                let next = here as isize + step;
+                (0..n).contains(&next).then_some(next)
             }
         };
-        rows.insert(0, first);
-        self.fill_suggestions(&rows);
+        self.picked.set(next.map(|i| i as usize));
+        let shown = match next {
+            Some(i) => {
+                let offer = self.offers.borrow()[i as usize].clone();
+                if matches!(offer.kind, Kind::Open(_)) { self.typed() } else { offer.key }
+            }
+            None => self.typed(),
+        };
+        if !self.summoning.get() {
+            self.set_text(&shown);
+            self.text.set_position(-1);
+        }
+        self.render();
+    }
 
-        if let Some(full) = completed {
-            // After GTK has finished the keystroke (it moves the cursor once
-            // `changed` returns), and only if nothing else was typed since.
-            let weak = self.weak();
-            let text = text.to_string();
-            glib::idle_add_local_once(move || {
-                let Some(b) = weak.upgrade() else { return };
-                if b.field.text() != text.as_str() || !b.field.has_focus() {
-                    return;
+    /// What it thinks you mean: three places you have been and, when it
+    /// can't be a place, a search.
+    fn guess(&self) {
+        let Some(b) = self.browser() else { return };
+        let typed = self.typed();
+        let words = typed.trim();
+        let mut offers = vec![];
+        if self.summoning.get() {
+            let needle = words.to_lowercase();
+            let mut open: Vec<_> = b
+                .tabs
+                .borrow()
+                .iter()
+                .filter(|t| !b.is_active(t) && !t.is_blank())
+                .filter(|t| {
+                    needle.is_empty() || t.label().to_lowercase().contains(&needle) || t.address().contains(&needle)
+                })
+                .cloned()
+                .collect();
+            open.sort_by_key(|t| std::cmp::Reverse(t.touched.get()));
+            for t in open.into_iter().take(if needle.is_empty() { 6 } else { 3 }) {
+                offers.push(Offer {
+                    key: t.label(),
+                    title: address::pretty(&t.address()),
+                    url: t.address(),
+                    kind: Kind::Open(t.id),
+                });
+            }
+            let any = !offers.is_empty();
+            *self.offers.borrow_mut() = offers;
+            self.ending.take();
+            self.picked.set(any.then_some(0));
+            self.render();
+            return;
+        }
+        if words.is_empty() {
+            self.offers.borrow_mut().clear();
+            self.ending.take();
+            self.picked.set(None);
+            self.render();
+            return;
+        }
+        for s in b.history.borrow().suggestions(words, 3) {
+            offers.push(Offer { key: s.shown.clone(), title: s.title.clone(), url: s.url.clone(), kind: Kind::Place });
+        }
+        if address::url_from(words).is_none() {
+            let prefs = b.prefs.borrow();
+            let (title, url) =
+                prefs.keyword_url(words).unwrap_or_else(|| (prefs.engine_name(), prefs.search_url(words)));
+            offers.push(Offer { key: typed.clone(), title, url, kind: Kind::Search });
+        }
+        let command = b
+            .prefs
+            .borrow()
+            .command_bar
+            .then(|| COMMANDS.iter().find(|(word, _)| *word == words.to_lowercase()))
+            .flatten();
+        if let Some((word, action)) = command {
+            let mut title: String = word.to_string();
+            if let Some(first) = title.get_mut(0..1) {
+                first.make_ascii_uppercase();
+            }
+            offers
+                .insert(0, Offer { key: title, title: String::new(), url: String::new(), kind: Kind::Command(action) });
+        }
+        let places: Vec<crate::history::Suggestion> = offers
+            .iter()
+            .filter(|o| o.kind == Kind::Place)
+            .map(|o| crate::history::Suggestion { url: o.url.clone(), title: o.title.clone(), shown: o.key.clone() })
+            .collect();
+        *self.ending.borrow_mut() = if command.is_some() {
+            None
+        } else {
+            b.history.borrow().completion(&typed, &places).and_then(|done| {
+                let full = if typed.to_lowercase().starts_with("www.") { format!("www.{done}") } else { done };
+                full.to_lowercase()
+                    .starts_with(&typed.to_lowercase())
+                    .then(|| full.get(typed.len()..).map(str::to_string))
+                    .flatten()
+            })
+        };
+        *self.offers.borrow_mut() = offers;
+        self.picked.set(None);
+        self.render();
+    }
+
+    fn render(&self) {
+        while let Some(c) = self.list.first_child() {
+            self.list.remove(&c);
+        }
+        let offers = self.offers.borrow().clone();
+        for (i, offer) in offers.iter().enumerate() {
+            let row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+            row.add_css_class("offer");
+            if self.picked.get() == Some(i) {
+                row.add_css_class("picked");
+            }
+            match offer.kind {
+                Kind::Search => {
+                    let glass = gtk::Image::from_icon_name("system-search-symbolic");
+                    glass.set_pixel_size(12);
+                    glass.add_css_class("muted");
+                    row.append(&glass);
                 }
-                b.set_field_quietly(&full);
-                b.field.select_region(text.chars().count() as i32, -1);
+                Kind::Open(_) => {
+                    let dot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+                    dot.add_css_class("open-dot");
+                    dot.set_valign(gtk::Align::Center);
+                    row.append(&dot);
+                }
+                Kind::Command(_) => {
+                    let key = gtk::Image::from_icon_name("input-keyboard-symbolic");
+                    key.set_pixel_size(12);
+                    key.add_css_class("muted");
+                    row.append(&key);
+                }
+                Kind::Place => {}
+            }
+            let key = gtk::Label::new(Some(offer.key.strip_prefix("www.").unwrap_or(&offer.key)));
+            key.add_css_class("offer-key");
+            key.set_ellipsize(pango::EllipsizeMode::End);
+            key.set_xalign(0.0);
+            row.append(&key);
+            if !offer.title.is_empty() {
+                let title = gtk::Label::new(Some(&offer.title));
+                title.add_css_class("offer-title");
+                title.set_ellipsize(pango::EllipsizeMode::End);
+                title.set_xalign(0.0);
+                title.set_hexpand(true);
+                row.append(&title);
+            }
+            let click = gtk::GestureClick::new();
+            let me = self.b.clone();
+            let offer = offer.clone();
+            click.connect_released(move |_, _, _, _| {
+                if let Some(b) = me.upgrade() {
+                    b.ui().field.take(&offer);
+                }
             });
+            row.add_controller(click);
+            self.list.append(&row);
         }
+        self.list_presence.show(!offers.is_empty());
     }
 
-    fn fill_suggestions(&self, rows: &[(String, String, &'static str, Pick)]) {
-        while let Some(child) = self.suggestion_list.first_child() {
-            self.suggestion_list.remove(&child);
-        }
-        let mut picks = Vec::new();
-        for (title, subtitle, icon, pick) in rows {
-            let line = gtk::Box::new(gtk::Orientation::Horizontal, 10);
-            line.add_css_class("wisp-suggestion");
-            let image = gtk::Image::from_icon_name(icon);
-            image.add_css_class("dim-label");
-            let text = gtk::Box::new(gtk::Orientation::Vertical, 0);
-            let t = gtk::Label::new(Some(title));
-            t.set_xalign(0.0);
-            t.set_ellipsize(pango::EllipsizeMode::End);
-            let s = gtk::Label::new(Some(subtitle));
-            s.set_xalign(0.0);
-            s.set_ellipsize(pango::EllipsizeMode::Middle);
-            s.add_css_class("dim-label");
-            s.add_css_class("caption");
-            text.append(&t);
-            text.append(&s);
-            text.set_hexpand(true);
-            line.append(&image);
-            line.append(&text);
-            self.suggestion_list.append(&line);
-            // Clicking a row must not take the focus from the field.
-            if let Some(row) = self.suggestion_list.last_child() {
-                row.set_focusable(false);
+    /// A row clicked, taken directly.
+    fn take(&self, offer: &Offer) {
+        let Some(b) = self.browser() else { return };
+        self.summoning.set(false);
+        match &offer.kind {
+            Kind::Command(action) => {
+                ActionGroupExt::activate_action(&b.window, action.trim_start_matches("win."), None);
             }
-            picks.push(pick.clone());
+            Kind::Open(id) => {
+                if let Some(t) = b.tab(*id) {
+                    b.select(&t);
+                }
+            }
+            _ => b.go(&offer.url),
         }
-        *self.suggestion_urls.borrow_mut() = picks;
-        let width = self.field.width().max(420);
-        self.suggestion_list.set_size_request(width, -1);
-        if !self.suggestions.is_visible() {
-            self.suggestions.popup();
-            // Popping up can pull focus; the typing stays in the field.
-            let field = self.field.clone();
-            let pos = field.position();
-            field.grab_focus_without_selecting();
-            field.set_position(pos);
+        self.editing.set(false);
+        self.typed.borrow_mut().clear();
+    }
+
+    /// Return. A row picked from the list wins; then what the field was
+    /// finishing for you; then what you typed. `aside`: Ctrl+Return, into a
+    /// new tab, behind unless `front`.
+    pub fn submit(&self, aside: bool, front: bool) {
+        let Some(b) = self.browser() else { return };
+        let offers = self.offers.borrow().clone();
+        let picked = self.picked.get().and_then(|i| offers.get(i).cloned());
+        if let Some(Offer { kind: Kind::Open(id), .. }) = &picked {
+            if let Some(t) = b.tab(*id) {
+                self.summoning.set(false);
+                self.editing.set(false);
+                b.select(&t);
+            }
+            return;
+        }
+        if self.summoning.replace(false) && self.typed().trim().is_empty() {
+            self.dismiss();
+            return;
+        }
+        if let Some(Offer { kind: Kind::Command(action), .. }) = picked.clone().or_else(|| offers.first().cloned()) {
+            self.editing.set(false);
+            self.typed.borrow_mut().clear();
+            self.dismiss();
+            ActionGroupExt::activate_action(&b.window, action.trim_start_matches("win."), None);
+            return;
+        }
+        let text = self.text.text().to_string();
+        // Finished from history: the page as it was visited, not rebuilt.
+        let visited = offers
+            .iter()
+            .find(|o| o.kind == Kind::Place && crate::history::identity(&o.url) == crate::history::identity(&text))
+            .map(|o| o.url.clone());
+        let target = match picked {
+            Some(o) => Some(o.url),
+            None => visited.or_else(|| b.prefs.borrow().destination(&text)),
+        };
+        let Some(url) = target else {
+            self.frame.add_css_class("refused");
+            motion::shake(&self.shaker);
+            return;
+        };
+        self.editing.set(false);
+        self.typed.borrow_mut().clear();
+        if aside {
+            let from = b.active();
+            b.open(&url, front, from.as_ref());
+            self.dismiss();
+        } else {
+            b.go(&url);
         }
     }
 }

@@ -3,17 +3,17 @@
 A small, fast, quiet web browser for Arch Linux.
 
 Wisp is a Rust rewrite of [Search](https://github.com/driceroland/Search), the
-Mac browser by Office Commun. It keeps Search's idea (a row of tabs, one field,
-and the page, with nothing else in the way) and moves it to Linux:
+Mac browser by Office Commun. It keeps Search's look, motion and behaviour (a
+column of tabs, one field, and the page, with nothing else in the way) and
+moves it to Linux:
 
 | | Search (upstream) | Wisp |
 |---|---|---|
 | Language | Swift | Rust |
 | Web engine | Apple WebKit (`WKWebView`) | WebKitGTK 6.0 (`webkit6`) |
-| Interface | SwiftUI + AppKit | GTK 4 + libadwaita |
+| Interface | SwiftUI + AppKit | GTK 4 + libadwaita, drawn to Search's design |
 | Platform | macOS 14+ | Linux, packaged for Arch |
 | Files | `~/Library/Application Support/Search` | XDG dirs: `~/.local/share/wisp`, `~/.config/wisp`, `~/.cache/wisp` |
-| Passwords | macOS keychain | Not yet (see below) |
 | Updates | Self-updater | pacman / your AUR helper |
 
 ---
@@ -27,10 +27,10 @@ cd packaging/arch
 makepkg -si
 ```
 
-This builds the `wisp-git` package from the latest commit and installs it with
-pacman. Uninstall with `sudo pacman -R wisp-git`.
+This builds the `wisp-git` package and installs it with pacman. Uninstall
+with `sudo pacman -R wisp-git`.
 
-Or build and install by hand:
+Or by hand:
 
 ```sh
 sudo pacman -S --needed base-devel rust webkitgtk-6.0 gtk4 libadwaita
@@ -38,183 +38,145 @@ make
 sudo make install          # to /usr/local; `sudo make uninstall` removes it
 ```
 
-For video and audio, install the GStreamer plugins you need:
-
-```sh
-sudo pacman -S gst-plugins-good gst-plugins-bad gst-libav
-```
-
-To make Wisp your default browser:
-
-```sh
-xdg-settings set default-web-browser org.wisp.Wisp.desktop
-```
+For video and audio: `sudo pacman -S gst-plugins-good gst-plugins-bad gst-libav`.
+To make Wisp the default browser:
+`xdg-settings set default-web-browser org.wisp.Wisp.desktop`.
 
 ---
 
 ## What it does
 
-- **One field.** Type an address and you go there; type words and you search.
-  It finishes addresses from your history as you type and suggests open tabs,
-  bookmarks and pages you've visited. Nothing you type leaves the machine until
-  you press Enter.
-- **Keywords.** `aw pacman` searches the Arch Wiki, `aur paru` the AUR,
-  `pkg firefox` the official repos, plus `yt`, `gh`, `w` (Wikipedia) and
-  `crate`. Add your own in `~/.config/wisp/settings.json`.
-- **Tabs down the left or across the top.** `Ctrl+Shift+S` switches. `Ctrl+B`
-  folds them away. Drag tabs to reorder. Right-click a tab to pin, duplicate,
-  mute or close it. Pinned tabs shrink to their icon and always come back.
-- **Tabs that cost nothing until you use them.** Tabs from last session come
-  back as just a name; the page loads when you open it. Background tabs you
-  haven't looked at in 30 minutes go to sleep and give their memory back
-  (configurable, and never a tab that's playing sound).
-- **An ad and tracker blocker that runs before the page.** The same rules as
-  Search, compiled once into WebKit's content-blocker bytecode and enforced
-  inside WebKit's networking. Turn it off per site if it breaks something.
-  WebKit's Intelligent Tracking Prevention is on too.
-- **Hide anything, for good.** `Ctrl+Shift+H`, then click a cookie banner, a
-  newsletter box, a sidebar. It goes, and it stays gone on that site, applied
-  as a user stylesheet before the page draws. `Ctrl+Shift+U` lists what's
-  hidden and brings things back.
-- **Reading mode.** `Ctrl+Alt+R` (or `F9`) strips a page down to the article.
-  Follows dark mode.
-- **Private tabs.** `Ctrl+Shift+N`. They share one in-memory cookie jar that
-  is thrown away when the last private tab closes. Never written to history or
-  to the session.
-- **Bookmarks, history, downloads**: each a searchable panel one key away.
-  Import bookmarks from Chromium, Chrome, Brave, Vivaldi or Edge in one click.
-- **Light, dark, or the system's.** The frame follows your desktop's
-  light/dark setting through libadwaita. Reading mode follows it too.
+Everything here is checked by the end-to-end tests (see below).
 
-### What it doesn't do
+- **One field.** A blank tab is just the field. Type an address and go; type
+  words and search. It completes addresses from history inline, offers pages
+  you've visited, and `Ctrl+K` jumps to an open tab. Keywords: `aw pacman`
+  (Arch Wiki), `aur paru`, `pkg firefox`, and your own in `settings.json`.
+- **Tabs down the side or across the top.** `Ctrl+Shift+S` switches, `Ctrl+S`
+  folds the column away; touch the window's edge and it peeks back. Drag to
+  reorder, drag the edge to resize. Click the tab you're on to type over its
+  address. Right-click for pin, rename, duplicate, copy, mute, sleep, close.
+- **Pins.** A pinned tab becomes a square with its letter or icon, keeps its
+  home page, and comes back every launch.
+- **`Ctrl+Tab` switcher.** Tap it to go back to the last tab; hold it for
+  pictures of your recent tabs.
+- **Tabs that cost nothing until used.** Last session's tabs come back as
+  names; background tabs asleep after 30 minutes give their memory back.
+- **Ad and tracker blocker** (Search's rules, compiled into WebKit's content
+  blocker), off per site with one switch.
+- **Hide anything for good.** `Ctrl+Shift+H`, click a cookie banner; it stays
+  gone on that site. `Ctrl+Shift+U` lists what's hidden and brings it back.
+- **Reading mode** (`Ctrl+Shift+R`), **find on page** (`Ctrl+F`), **zoom**
+  remembered per site, **permission questions** in a small line at the bottom,
+  remembered once answered.
+- **Private tabs** (`Ctrl+Shift+N`). A new tab from a private tab is private
+  too. Nothing is written to history or the session.
+- **History, bookmarks, downloads and settings** as panels that slide over the
+  page, each one key away. Chromium-family bookmarks import in one click.
+- **Light, dark or the system's**, with Search's exact greys.
 
-On purpose, as with Search: no account, no sync, no telemetry, no start page,
-no crash reports. One window.
+### Search features not in Wisp
 
-### Not ported yet
+Search is about 50,000 lines of Swift. Wisp ports the browser at its core, in
+about 8,000 lines of Rust. These parts of Search are **not** ported:
 
-Search is about 50,000 lines of Swift. This first version covers its core. These
-parts of Search are **not** in Wisp yet:
-
-| Feature | Why it's missing |
+| Feature | Why |
 |---|---|
-| Chrome extensions | WebKitGTK has no WebExtensions API like the one Search builds on (`WKWebExtension`, macOS 15.4+). Would need a large shim. |
-| Saved passwords and passkeys | WebKitGTK has no autofill API. A version using the Secret Service (GNOME Keyring / KWallet) via `libsecret` is possible but not written. |
+| Chrome extensions | WebKitGTK has no WebExtensions API like `WKWebExtension`. |
+| Saved passwords, passkeys | WebKitGTK has no autofill API. Possible later via `libsecret`. |
 | Floating video (picture-in-picture) | WebKitGTK doesn't implement the PiP API. |
-| Split view (two pages side by side) | Planned; a `gtk::Paned` with two views. |
-| Spaces and tab groups | Planned. |
-| AI assistant, AppleScript, Arc/Safari import | macOS-specific or out of scope. |
-| Self-updater | Not needed: pacman handles updates. |
+| Split view, spaces, tab groups | Not written yet. |
+| Link peek, the small "Little" window, bookmarks bar, site card, middle-button auto-scroll | Not written yet. |
+| AI assistant, AppleScript, sharing, Arc/Safari import | macOS-specific or out of scope. |
+| Self-updater, welcome and what's-new pages | pacman handles updates. |
+
+On purpose, as with Search: no account, no sync, no telemetry, one window.
 
 ---
 
 ## Keyboard
 
-`Ctrl+?` inside Wisp lists these too.
+Search's keys, with `Ctrl` for `⌘`. Settings › Shortcuts lists them too.
 
 | Keys | Action | Keys | Action |
 |---|---|---|---|
-| `Ctrl+L`, `Alt+D`, `F6` | Address field | `Ctrl+K` | Switch to an open tab |
+| `Ctrl+L` | Address field | `Ctrl+K` | Go to an open tab |
 | `Ctrl+T` / `Ctrl+W` | New / close tab | `Ctrl+Shift+T` | Reopen closed tab |
-| `Ctrl+Shift+N` | New private tab | `Ctrl+Shift+D` | Duplicate tab |
-| `Ctrl+Tab` / `Ctrl+Shift+Tab` | Next / previous tab | `Ctrl+1`…`Ctrl+9` | Jump to tab (9 = last) |
-| `Alt+←` / `Alt+→` | Back / forward | `Ctrl+Alt+P` | Pin / unpin tab |
-| `Ctrl+R`, `F5` | Reload | `Ctrl+Shift+R`, `Shift+F5` | Reload, bypassing the cache |
-| `Ctrl+F`, `Ctrl+G` | Find, find next | `Ctrl+Alt+R`, `F9` | Reading mode |
+| `Ctrl+Shift+N` | New private tab | `Ctrl+D` | Duplicate tab |
+| `Ctrl+Tab` | Recent tabs | `Ctrl+Shift+[` / `]` | Previous / next tab |
+| `Ctrl+1`…`Ctrl+9` | Jump to tab | `Ctrl+[` / `Ctrl+]` | Back / forward |
+| `Ctrl+R`, `F5` | Reload | `Ctrl+Alt+R` | Reload, skipping the cache |
+| `Ctrl+F`, `Ctrl+G` | Find, find next | `Ctrl+Shift+R` | Reading mode |
 | `Ctrl+Shift+H` | Hide something | `Ctrl+Shift+U` | What's hidden here |
-| `Ctrl+D` | Bookmark page | `Ctrl+Shift+O` | Bookmarks |
-| `Ctrl+H`, `Ctrl+Y` | History | `Ctrl+J` | Downloads |
-| `Ctrl+Shift+S` | Tabs left / top | `Ctrl+B` | Fold tabs away |
+| `Ctrl+Shift+B` | Bookmark page | `Ctrl+Y` | History |
+| `Ctrl+Shift+J` | Downloads | `Ctrl+,` | Settings |
+| `Ctrl+Shift+S` | Tabs side / top | `Ctrl+S` | Fold tabs away |
 | `Ctrl+Shift+C` | Copy address | `Ctrl+Shift+V` | Paste and go |
-| `Ctrl +` / `Ctrl −` / `Ctrl+0` | Zoom | `F11` | Full screen |
-| `F12`, `Ctrl+Shift+I` | Web inspector | `Ctrl+,` | Settings |
-
-Middle-click or `Ctrl`+click a link to open it in a background tab. Middle-click
-a tab to close it. Mouse back/forward buttons work.
-
-**Where Wisp's keys differ from Search's**, to match what Linux browsers use:
-bookmarking is `Ctrl+D` (Search uses `⇧⌘B`), `Ctrl+Shift+R` is a hard reload,
-so reading mode moved to `Ctrl+Alt+R`; folding the sidebar is `Ctrl+B` rather
-than `⌘S`, because `Ctrl+S` means save.
+| `Ctrl +` / `−` / `0` | Zoom | `F11` / `F12` | Full screen / inspector |
 
 ---
 
 ## Privacy, concretely
 
-| What | Where it is | Who can read it |
+| What | Where | Who can read it |
 |---|---|---|
-| History, bookmarks, open tabs, hidden elements | Small JSON files in `~/.local/share/wisp/` | You. |
+| History, bookmarks, tabs, hidden elements, downloads list | JSON files in `~/.local/share/wisp/` | You. |
 | Settings | `~/.config/wisp/settings.json` | You. |
-| Cookies and site data | `~/.local/share/wisp/webkit/` | The sites that set them. Clear them in Settings › Privacy. |
-| Cache and compiled block list | `~/.cache/wisp/` | Safe to delete at any time. |
+| Cookies and site data | `~/.local/share/wisp/webkit/` | The sites that set them. Clear in Settings › Privacy. |
+| Cache, compiled block list | `~/.cache/wisp/` | Safe to delete. |
 | Private tabs | Memory only | Gone when the last private tab closes. |
-| Anything else | Nowhere. There is no server. | — |
 
 ---
 
 ## Made for Arch
 
-- **Uses your system's WebKit.** Wisp links against Arch's `webkitgtk-6.0`
-  and gets its security fixes through `pacman -Syu`, rather than bundling an
-  engine. The stripped release binary is about 1.2 MB.
-- **Native Wayland** (and X11), through GTK 4. Touchpad swipe for back/forward.
-- **Sandboxed web processes.** WebKitGTK runs each page in its own process
-  inside a `bubblewrap` sandbox (a dependency of `webkitgtk-6.0`).
-- **XDG everywhere.** Files go where the XDG spec says. Downloads go to your
-  `xdg-user-dirs` Downloads folder. File pickers and "open file" go through
-  `xdg-desktop-portal`, so they look native on GNOME, KDE and others.
-- **Optimised release build.** Fat LTO, one codegen unit, `panic = abort`
-  (see `Cargo.toml`). The PKGBUILD follows the Arch Rust packaging guidelines
-  (`cargo fetch --locked`, `--frozen` builds, tests in `check()`) and respects
-  your `makepkg.conf` `RUSTFLAGS`. For a build tuned to your own CPU, add
-  `-C target-cpu=native` to `RUSTFLAGS` in `/etc/makepkg.conf`.
+- Links against Arch's `webkitgtk-6.0`, so engine security fixes arrive with
+  `pacman -Syu`.
+- Native Wayland and X11 through GTK 4. Each page runs in WebKit's
+  `bubblewrap` sandbox.
+- XDG directories, `xdg-user-dirs` Downloads, file dialogs through
+  `xdg-desktop-portal`.
+- Release build with fat LTO, one codegen unit and `panic = abort`.
 
-### Troubleshooting
-
-- **Blank or flickering pages on NVIDIA's proprietary driver.** A known
-  WebKitGTK issue. Run with `WEBKIT_DISABLE_DMABUF_RENDERER=1 wisp`, or turn
-  off Settings › Performance › Hardware acceleration.
-- **Videos don't play.** Install `gst-plugins-good`, `gst-plugins-bad` and
-  `gst-libav`.
-- **No spell checking.** Install a hunspell dictionary, e.g. `hunspell-en_us`.
-- **Netflix, Disney+ and other DRM sites don't play.** WebKitGTK has no
-  Widevine support. This is a WebKitGTK limitation, not something Wisp can fix.
+**Troubleshooting.** Blank pages on NVIDIA's proprietary driver: run with
+`WEBKIT_DISABLE_DMABUF_RENDERER=1`, or turn off hardware acceleration in
+Settings. No video: install the GStreamer plugins above. DRM sites (Netflix
+and similar) don't play: WebKitGTK has no Widevine.
 
 ---
 
 ## For developers
 
 ```sh
-cargo run -- https://archlinux.org     # debug build
-cargo test                             # unit tests for the non-GUI parts
-cargo clippy --all-targets
+cargo run -- https://archlinux.org
+tests/e2e/run.sh                 # every end-to-end test
+tests/e2e/run.sh find zoom       # just the ones whose names match
 ```
 
-Needs Rust 1.88+, GTK 4.14+, libadwaita 1.5+ and WebKitGTK 2.44+ (Arch ships
-newer versions of all of them).
+There are no unit tests. The tests drive the real browser on a virtual
+screen: they type with `xdotool`, read the window through the accessibility
+tree (AT-SPI), and load pages from a small local server posing as the web
+(`news.test`, `shop.test`, a search engine, a download, a site that fails).
+Each test starts Wisp with an empty home, so they don't touch yours. A
+failing test saves a screenshot to `target/e2e/`.
 
-### How it's put together
+They need `xorg-server-xvfb xdotool python-gobject at-spi2-core imagemagick`.
+Building needs Rust 1.88+, GTK 4.14+, libadwaita 1.5+, WebKitGTK 2.44+.
 
-One file per concern, as in Search:
-
-| File | What it does | Search's equivalent |
-|---|---|---|
-| `main.rs` | Start-up, single instance, command line | `App.swift` |
-| `browser.rs` | The window, layout, tabs, session | `Browser.swift`, `TabBar.swift`, `Side.swift` |
-| `tab.rs` | One tab: lazy WebView, its row in the list | `Tab.swift` |
-| `view.rs` | Building a WebView and handling its signals | `Tab.swift`, `Stage.swift` |
-| `web.rs` | Network sessions, WebKit settings, block-list compile | `Engine.swift`, `Shield.swift` |
-| `omnibox.rs` | The address field and its suggestions | `Omnibox.swift` |
-| `address.rs` | Is it an address or a search? | `Address.swift` |
-| `history.rs` | Visits and frecency ranking | `History.swift` |
-| `bookmarks.rs` | Bookmarks and Chromium import | `Bookmarks.swift`, `Import.swift` |
-| `shield.rs` | The ad-block rules (same as Search's) | `Shield.swift` |
-| `curtain.rs`, `js/picker.js` | Hidden elements and the picker | `Curtain.swift` |
-| `js/reader.js` | Reading mode | `Reader.swift` |
-| `downloads.rs` | Downloads | `Fetching.swift` |
-| `panels.rs` | History, bookmarks, downloads, tab switcher dialogs | `Recall.swift`, `TabSwitcher.swift` |
-| `prefs.rs`, `settings.rs` | Settings window and stored settings | `Settings.swift`, `Prefs.swift` |
-| `actions.rs` | Every command and its shortcut | `Shortcuts.swift` |
+| File | What it does |
+|---|---|
+| `main.rs` | Start-up, one instance, command line, colours |
+| `browser.rs` | The window: tabs, the room the column takes, session, downloads |
+| `tab.rs` | One tab and its WebView's signals |
+| `tabs.rs` | The column and the strip: rows, pins, the live pill, dragging |
+| `omnibox.rs` | The field and its suggestions |
+| `bars.rs` | The line at the bottom, the link under the pointer, find |
+| `panels.rs` | History, downloads, bookmarks, settings, hidden things |
+| `switcher.rs` | `Ctrl+Tab` |
+| `keys.rs` | Every key and menu action |
+| `motion.rs` | Search's springs and fades |
+| `web.rs`, `shield.rs`, `curtain.rs` | WebKit sessions, the blocker, hidden elements |
+| `settings.rs`, `history.rs`, `bookmarks.rs`, `loot.rs`, `address.rs`, `store.rs` | What's kept, and how |
 
 ## License
 

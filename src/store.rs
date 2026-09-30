@@ -78,23 +78,3 @@ pub fn save<T: Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
     }
     fs::rename(tmp, path)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn round_trip_and_broken_file() {
-        let dir = std::env::temp_dir().join(format!("wisp-store-{}", std::process::id()));
-        let file = dir.join("x.json");
-        save(&file, &vec![1, 2, 3]).unwrap();
-        let back: Vec<i32> = load(&file);
-        assert_eq!(back, vec![1, 2, 3]);
-
-        fs::write(&file, b"{not json").unwrap();
-        let back: Vec<i32> = load(&file);
-        assert!(back.is_empty());
-        assert!(file.with_extension("broken").exists());
-        let _ = fs::remove_dir_all(dir);
-    }
-}

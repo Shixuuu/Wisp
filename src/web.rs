@@ -1,82 +1,68 @@
 //! Everything WebKit-wide: the network sessions, the page settings, and the
-//! compiled ad-block list. One of each for the whole browser; tabs borrow.
+//! compiled ad-block list. One of each for the browser; tabs borrow them.
 
-use crate::settings::Settings;
+use crate::settings::Prefs;
 use crate::{shield, store};
 use gtk::glib;
 use std::cell::RefCell;
 use std::rc::Rc;
-use webkit6::{
-    CacheModel, HardwareAccelerationPolicy, NetworkSession, UserContentFilter, UserContentFilterStore, WebContext,
-};
+use webkit6::{CacheModel, HardwareAccelerationPolicy, NetworkSession, UserContentFilter, UserContentFilterStore};
 
 pub struct Web {
     /// Cookies, site data and cache on disk, for ordinary tabs.
     pub session: NetworkSession,
-    /// Made the first time a private tab opens; lives in memory only and is
-    /// shared by every private tab until the last one closes.
-    private: RefCell<Option<NetworkSession>>,
+    /// Made with the first private tab, in memory only, dropped with the last.
+    shy: RefCell<Option<NetworkSession>>,
     pub settings: webkit6::Settings,
-    /// None until compiled (it takes a moment at first launch).
+    /// None until compiled, a moment after the first launch.
     pub filter: RefCell<Option<UserContentFilter>>,
 }
 
 impl Web {
-    pub fn new(prefs: &Settings) -> Web {
+    pub fn new(prefs: &Prefs) -> Web {
         let data = store::data_dir().join("webkit");
         let cache = store::cache_dir().join("webkit");
         let session = NetworkSession::new(data.to_str(), cache.to_str());
-        prepare_session(&session);
-        // Remember logins that sites ask for with HTTP authentication.
         session.set_persistent_credential_storage_enabled(true);
-
-        if let Some(context) = WebContext::default() {
-            // Aggressive memory and disk caching, as a browser wants (as
-            // opposed to a help viewer or a single-document app).
+        prepare(&session, !prefs.keeps_sign_ins);
+        if let Some(context) = webkit6::WebContext::default() {
             context.set_cache_model(CacheModel::WebBrowser);
             context.set_spell_checking_enabled(true);
-            if !prefs.spell_languages.is_empty() {
-                let langs: Vec<&str> = prefs.spell_languages.iter().map(String::as_str).collect();
-                context.set_spell_checking_languages(&langs);
-            }
         }
-
         let settings = webkit6::Settings::new();
-        apply_settings(&settings, prefs);
-
-        Web { session, private: RefCell::new(None), settings, filter: RefCell::new(None) }
+        apply(&settings, prefs);
+        Web { session, shy: RefCell::default(), settings, filter: RefCell::default() }
     }
 
-    pub fn private_session(&self) -> NetworkSession {
-        self.private
-            .borrow_mut()
-            .get_or_insert_with(|| {
-                let session = NetworkSession::new_ephemeral();
-                prepare_session(&session);
-                session
-            })
-            .clone()
+    /// The private session, and whether it was just made.
+    pub fn shy_session(&self) -> (NetworkSession, bool) {
+        let mut shy = self.shy.borrow_mut();
+        if let Some(s) = shy.as_ref() {
+            return (s.clone(), false);
+        }
+        let s = NetworkSession::new_ephemeral();
+        // Private tabs keep tracking prevention on whatever the setting says.
+        prepare(&s, true);
+        *shy = Some(s.clone());
+        (s, true)
     }
 
-    /// Called when the last private tab closes: the next private tab starts
-    /// with an empty cookie jar.
-    pub fn drop_private_session(&self) {
-        self.private.borrow_mut().take();
+    pub fn drop_shy_session(&self) {
+        self.shy.borrow_mut().take();
     }
 
-    /// Compile the block list into WebKit's bytecode. `done` runs on the main
-    /// thread once it is ready, or with an error message if it isn't.
+    pub fn set_tracking_prevention(&self, on: bool) {
+        self.session.set_itp_enabled(on);
+    }
+
+    /// Compile the block list into WebKit's bytecode, kept in the cache.
     pub fn compile_shield(self: &Rc<Self>, done: impl FnOnce(Result<(), String>) + 'static) {
         let dir = store::cache_dir().join("filters");
         let _ = std::fs::create_dir_all(&dir);
-        let Some(path) = dir.to_str() else {
-            done(Err("cache directory isn't valid UTF-8".into()));
-            return;
-        };
-        let filter_store = UserContentFilterStore::new(path);
+        let filters = UserContentFilterStore::new(&dir.to_string_lossy());
         let source = glib::Bytes::from_owned(shield::rules().into_bytes());
         let web = Rc::downgrade(self);
-        filter_store.save(shield::IDENTIFIER, &source, None::<&gtk::gio::Cancellable>, move |result| match result {
+        filters.save(shield::IDENTIFIER, &source, None::<&gtk::gio::Cancellable>, move |result| match result {
             Ok(filter) => {
                 if let Some(web) = web.upgrade() {
                     *web.filter.borrow_mut() = Some(filter);
@@ -88,18 +74,16 @@ impl Web {
     }
 }
 
-fn prepare_session(session: &NetworkSession) {
-    // Intelligent Tracking Prevention: WebKit's own defence against
-    // cross-site tracking cookies, as in Safari.
-    session.set_itp_enabled(true);
+fn prepare(session: &NetworkSession, tracking_prevention: bool) {
+    session.set_itp_enabled(tracking_prevention);
     if let Some(manager) = session.website_data_manager() {
         manager.set_favicons_enabled(true);
     }
 }
 
-pub fn apply_settings(s: &webkit6::Settings, prefs: &Settings) {
+pub fn apply(s: &webkit6::Settings, prefs: &Prefs) {
     s.set_enable_developer_extras(true);
-    s.set_enable_smooth_scrolling(prefs.smooth_scrolling);
+    s.set_enable_smooth_scrolling(true);
     s.set_enable_back_forward_navigation_gestures(true);
     s.set_hardware_acceleration_policy(if prefs.hardware_acceleration {
         HardwareAccelerationPolicy::Always
@@ -117,8 +101,5 @@ pub fn apply_settings(s: &webkit6::Settings, prefs: &Settings) {
     s.set_enable_html5_local_storage(true);
     s.set_enable_html5_database(true);
     s.set_enable_site_specific_quirks(true);
-    // Popups only when a person clicked for them.
     s.set_javascript_can_open_windows_automatically(false);
-    // The user agent is left as WebKitGTK's own: it is tuned so sites treat
-    // it like Safari, and anything appended to it only invites sniffing.
 }

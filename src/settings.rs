@@ -1,19 +1,17 @@
-//! Settings, the search engine, and keyword shortcuts.
-//!
-//! Stored as one small JSON file in `~/.config/wisp/settings.json`. Every
-//! field has a default, so a file from an older version still loads.
+//! Settings: one small JSON file in `~/.config/wisp/settings.json`, with
+//! Search's own defaults. Every field has a default, so an older file loads.
 
 use crate::store;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::collections::BTreeMap;
 use url::Url;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Engine {
     #[default]
-    DuckDuckGo,
     Google,
+    DuckDuckGo,
     Bing,
     Ecosia,
     Startpage,
@@ -25,8 +23,8 @@ pub enum Engine {
 
 impl Engine {
     pub const ALL: [Engine; 9] = [
-        Engine::DuckDuckGo,
         Engine::Google,
+        Engine::DuckDuckGo,
         Engine::Bing,
         Engine::Ecosia,
         Engine::Startpage,
@@ -38,8 +36,8 @@ impl Engine {
 
     pub fn name(self) -> &'static str {
         match self {
-            Engine::DuckDuckGo => "DuckDuckGo",
             Engine::Google => "Google",
+            Engine::DuckDuckGo => "DuckDuckGo",
             Engine::Bing => "Bing",
             Engine::Ecosia => "Ecosia",
             Engine::Startpage => "Startpage",
@@ -52,8 +50,8 @@ impl Engine {
 
     fn template(self) -> &'static str {
         match self {
-            Engine::DuckDuckGo => "https://duckduckgo.com/?q=%s",
             Engine::Google => "https://www.google.com/search?q=%s",
+            Engine::DuckDuckGo => "https://duckduckgo.com/?q=%s",
             Engine::Bing => "https://www.bing.com/search?q=%s",
             Engine::Ecosia => "https://www.ecosia.org/search?q=%s",
             Engine::Startpage => "https://www.startpage.com/sp/search?query=%s",
@@ -67,11 +65,20 @@ impl Engine {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
-pub enum Theme {
-    #[default]
-    System,
+pub enum Look {
     Light,
     Dark,
+    #[default]
+    System,
+}
+
+/// What a tab wears beside its title and on a pinned square.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Glyph {
+    #[default]
+    Letters,
+    Icons,
 }
 
 /// A word typed before a search: "aw pacman" goes straight to the Arch Wiki.
@@ -81,78 +88,101 @@ pub struct Keyword {
     pub template: String,
 }
 
-fn default_keywords() -> Vec<Keyword> {
+fn arch_keywords() -> Vec<Keyword> {
     let k = |w: &str, t: &str| Keyword { keyword: w.into(), template: t.into() };
     vec![
         k("aw", "https://wiki.archlinux.org/index.php?search=%s"),
         k("aur", "https://aur.archlinux.org/packages?K=%s"),
         k("pkg", "https://archlinux.org/packages/?q=%s"),
-        k("yt", "https://www.youtube.com/results?search_query=%s"),
-        k("gh", "https://github.com/search?q=%s"),
-        k("w", "https://en.wikipedia.org/w/index.php?search=%s"),
-        k("crate", "https://crates.io/search?q=%s"),
     ]
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
-pub struct Settings {
+pub struct Prefs {
+    pub look: Look,
+    /// Tabs in a column down the side, or in a strip across the top.
+    pub sidebar: bool,
+    pub side_right: bool,
+    /// The column hidden until the pointer reaches the window's edge.
+    pub side_hides: bool,
+    pub side_width: f64,
+    /// Back, forward and reload before the tabs in the strip.
+    pub navigation_left: bool,
+    pub glyph: Glyph,
     pub engine: Engine,
-    /// Used when `engine` is `Custom`. An address with `%s` where the words go.
     pub custom_engine: String,
     pub keywords: Vec<Keyword>,
-    /// Tabs down the left (true) or across the top (false).
-    pub tabs_on_left: bool,
-    /// The sidebar folded away, leaving only the page.
-    pub sidebar_folded: bool,
-    pub sidebar_width: i32,
-    pub theme: Theme,
-    /// The ad and tracker blocker.
-    pub shield: bool,
-    /// Sites the blocker is switched off for, because it broke them.
+    pub sleeps_tabs: bool,
+    /// A link opened behind the page waits to load until you go to it.
+    pub lazy_tabs: bool,
+    /// Each launch starts with the pins, not last time's tabs.
+    pub starts_fresh: bool,
+    /// The tab you're on fills with grey as you read down the page.
+    pub shows_reading: bool,
+    pub shows_links: bool,
+    /// "settings", "history"… typed alone go there instead of searching.
+    pub command_bar: bool,
+    pub shielded: bool,
     pub shield_paused: Vec<String>,
-    /// Background tabs untouched for this long give back their memory.
-    /// 0 means never.
-    pub sleep_minutes: u32,
-    /// Bring back last session's tabs at launch.
-    pub restore_session: bool,
-    pub default_zoom: f64,
-    /// Let WebKit draw pages on the GPU. Turn off if a driver misbehaves.
+    /// Off: WebKit's cross-site tracking prevention is on, as in Safari.
+    pub keeps_sign_ins: bool,
+    pub site_notifications: bool,
+    pub page_zoom: f64,
+    /// Zoom chosen with Ctrl+plus and Ctrl+minus, remembered per site.
+    pub zooms: BTreeMap<String, f64>,
+    /// Answers to camera, microphone, location and notifications, as
+    /// "host kind" → allowed.
+    pub permissions: BTreeMap<String, bool>,
+    pub always_shows_downloads: bool,
     pub hardware_acceleration: bool,
-    pub smooth_scrolling: bool,
-    /// Spell-check languages, e.g. ["en_US"]. Empty uses the system locale.
-    pub spell_languages: Vec<String>,
 }
 
-impl Default for Settings {
+impl Default for Prefs {
     fn default() -> Self {
-        Settings {
-            engine: Engine::default(),
+        Prefs {
+            look: Look::System,
+            sidebar: true,
+            side_right: false,
+            side_hides: false,
+            side_width: SIDE,
+            navigation_left: false,
+            glyph: Glyph::Letters,
+            engine: Engine::Google,
             custom_engine: String::new(),
-            keywords: default_keywords(),
-            tabs_on_left: true,
-            sidebar_folded: false,
-            sidebar_width: 240,
-            theme: Theme::default(),
-            shield: true,
+            keywords: arch_keywords(),
+            sleeps_tabs: true,
+            lazy_tabs: false,
+            starts_fresh: false,
+            shows_reading: true,
+            shows_links: true,
+            command_bar: false,
+            shielded: true,
             shield_paused: Vec::new(),
-            sleep_minutes: 30,
-            restore_session: true,
-            default_zoom: 1.0,
+            keeps_sign_ins: false,
+            site_notifications: true,
+            page_zoom: 1.0,
+            zooms: BTreeMap::new(),
+            permissions: BTreeMap::new(),
+            always_shows_downloads: false,
             hardware_acceleration: true,
-            smooth_scrolling: true,
-            spell_languages: Vec::new(),
         }
     }
 }
 
-impl Settings {
-    fn file() -> PathBuf {
+pub const SIDE: f64 = 232.0;
+pub const SIDE_MIN: f64 = 176.0;
+pub const SIDE_MAX: f64 = 440.0;
+
+impl Prefs {
+    fn file() -> std::path::PathBuf {
         store::config_dir().join("settings.json")
     }
 
-    pub fn load() -> Settings {
-        store::load(&Self::file())
+    pub fn load() -> Prefs {
+        let mut p: Prefs = store::load(&Self::file());
+        p.side_width = p.side_width.clamp(SIDE_MIN, SIDE_MAX);
+        p
     }
 
     pub fn save(&self) {
@@ -162,35 +192,48 @@ impl Settings {
     }
 
     fn engine_template(&self) -> &str {
-        if self.engine == Engine::Custom && accepts(&self.custom_engine) {
-            &self.custom_engine
-        } else if self.engine == Engine::Custom {
-            Engine::DuckDuckGo.template()
-        } else {
-            self.engine.template()
+        match self.engine {
+            Engine::Custom if accepts(&self.custom_engine) => &self.custom_engine,
+            Engine::Custom => Engine::Google.template(),
+            other => other.template(),
         }
     }
 
-    /// Where typed words go: to a keyword's site if they start with one,
-    /// otherwise to the chosen engine.
-    pub fn search_url(&self, typed: &str) -> String {
-        if let Some((keyword, rest)) = self.keyword_match(typed) {
-            return fill(&keyword.template, rest);
+    pub fn engine_name(&self) -> String {
+        match self.engine {
+            Engine::Custom => crate::address::bare_host(&self.custom_engine).unwrap_or_else(|| "Custom".into()),
+            other => other.name().into(),
         }
-        fill(self.engine_template(), typed.trim())
     }
 
-    pub fn keyword_match<'a>(&'a self, typed: &'a str) -> Option<(&'a Keyword, &'a str)> {
+    pub fn search_url(&self, words: &str) -> String {
+        fill(self.engine_template(), words.trim())
+    }
+
+    /// "aw pacman" → the keyword's name and where it sends the words.
+    pub fn keyword_url(&self, typed: &str) -> Option<(String, String)> {
         let (word, rest) = typed.trim_start().split_once(' ')?;
         let rest = rest.trim();
         if rest.is_empty() {
             return None;
         }
-        self.keywords
-            .iter()
-            .filter(|k| accepts(&k.template))
-            .find(|k| !k.keyword.is_empty() && k.keyword.eq_ignore_ascii_case(word))
-            .map(|k| (k, rest))
+        let k = self.keywords.iter().filter(|k| accepts(&k.template)).find(|k| k.keyword.eq_ignore_ascii_case(word))?;
+        Some((crate::address::bare_host(&k.template).unwrap_or_default(), fill(&k.template, rest)))
+    }
+
+    /// Where Return goes with what was typed: a place, a keyword's site, or
+    /// the search engine.
+    pub fn destination(&self, typed: &str) -> Option<String> {
+        if typed.trim().is_empty() {
+            return None;
+        }
+        if let Some(url) = crate::address::url_from(typed) {
+            return Some(url.to_string());
+        }
+        if let Some((_, url)) = self.keyword_url(typed) {
+            return Some(url);
+        }
+        Some(self.search_url(typed))
     }
 
     pub fn is_paused(&self, host: &str) -> bool {
@@ -201,7 +244,6 @@ impl Settings {
         self.shield_paused.retain(|h| h != host);
         if paused {
             self.shield_paused.push(host.to_string());
-            self.shield_paused.sort();
         }
     }
 }
@@ -209,18 +251,14 @@ impl Settings {
 const MARK: &str = "WISPSEARCHWORDS";
 
 /// A template words may be sent to: http or https, one `%s`, and that `%s`
-/// in the path, query or fragment. Anywhere else (in the host, before an @)
-/// the words would decide where you end up rather than what you look for.
+/// in the path, query or fragment, never in the host.
 pub fn accepts(template: &str) -> bool {
     let t = template.trim();
     if t.matches("%s").count() != 1 {
         return false;
     }
     let Ok(url) = Url::parse(&t.replace("%s", MARK)) else { return false };
-    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
-        return false;
-    }
-    if url.host_str().is_some_and(|h| h.to_ascii_uppercase().contains(MARK)) || url.username().contains(MARK) {
+    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none_or(|h| h.to_uppercase().contains(MARK)) {
         return false;
     }
     [Some(url.path()), url.query(), url.fragment()].iter().flatten().any(|p| p.contains(MARK))
@@ -229,36 +267,4 @@ pub fn accepts(template: &str) -> bool {
 fn fill(template: &str, words: &str) -> String {
     let encoded: String = url::form_urlencoded::byte_serialize(words.as_bytes()).collect();
     template.replacen("%s", &encoded, 1)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn search_and_keywords() {
-        let s = Settings::default();
-        assert_eq!(s.search_url("arch linux"), "https://duckduckgo.com/?q=arch+linux");
-        assert_eq!(s.search_url("aw pacman hooks"), "https://wiki.archlinux.org/index.php?search=pacman+hooks");
-        assert_eq!(s.search_url("AUR paru"), "https://aur.archlinux.org/packages?K=paru");
-        // A keyword with nothing after it is just a word to search for.
-        assert_eq!(s.search_url("aw"), "https://duckduckgo.com/?q=aw");
-    }
-
-    #[test]
-    fn templates() {
-        assert!(accepts("https://example.com/?q=%s"));
-        assert!(accepts("https://example.com/search/%s"));
-        assert!(!accepts("https://%s.example.com/"));
-        assert!(!accepts("https://example.com/?q=%s&r=%s"));
-        assert!(!accepts("ftp://example.com/?q=%s"));
-        assert!(!accepts("https://example.com/"));
-    }
-
-    #[test]
-    fn old_file_still_loads() {
-        let s: Settings = serde_json::from_str(r#"{"engine":"kagi"}"#).unwrap();
-        assert_eq!(s.engine, Engine::Kagi);
-        assert!(s.shield);
-    }
 }

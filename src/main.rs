@@ -3,22 +3,23 @@
 //! A Rust rewrite of Search (github.com/driceroland/Search), with Apple's
 //! WebKit swapped for WebKitGTK and SwiftUI/AppKit for GTK 4 and libadwaita.
 
-mod actions;
 mod address;
+mod bars;
 mod bookmarks;
 mod browser;
 mod curtain;
-mod downloads;
 mod history;
+mod keys;
+mod loot;
+mod motion;
 mod omnibox;
 mod panels;
-mod prefs;
-mod session;
 mod settings;
 mod shield;
 mod store;
+mod switcher;
 mod tab;
-mod view;
+mod tabs;
 mod web;
 
 use adw::prelude::*;
@@ -63,7 +64,7 @@ fn main() -> glib::ExitCode {
     let browser: Rc<RefCell<Option<Rc<Browser>>>> = Rc::new(RefCell::new(None));
 
     app.connect_startup(|_| {
-        load_css();
+        style();
         gtk::Window::set_default_icon_name(APP_ID);
     });
 
@@ -87,7 +88,7 @@ fn main() -> glib::ExitCode {
             .map(|arg| target_for(line, &arg))
             .collect();
         if private {
-            browser.new_tab(true);
+            browser.new_shy_tab();
         }
         for target in targets {
             browser.open_from_outside(&target);
@@ -112,14 +113,36 @@ fn target_for(line: &gio::ApplicationCommandLine, arg: &str) -> String {
     }
     match address::url_from(arg) {
         Some(url) => url.to_string(),
-        None => settings::Settings::load().search_url(arg),
+        None => settings::Prefs::load().search_url(arg),
     }
 }
 
-fn load_css() {
-    let provider = gtk::CssProvider::new();
-    provider.load_from_string(include_str!("style.css"));
-    if let Some(display) = gdk::Display::default() {
-        gtk::style_context_add_provider_for_display(&display, &provider, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
-    }
+/// Search's greys, one pair for a light window and one for a dark. The
+/// stylesheet names the colours; which pair they mean follows the look.
+const LIGHT: &str = "@define-color ground #ffffff; @define-color ink #171717; @define-color muted #8c8c8c;
+@define-color faint #d4d4d4; @define-color hairline #e8e8e8; @define-color wash #efefef;
+@define-color pinlive #e6e6e6; @define-color hover #f6f6f6;";
+const DARK: &str = "@define-color ground #1c1c1c; @define-color ink #ededed; @define-color muted #949494;
+@define-color faint #525252; @define-color hairline #333333; @define-color wash #2d2d2d;
+@define-color pinlive #363636; @define-color hover #262626;";
+
+fn style() {
+    let Some(display) = gdk::Display::default() else { return };
+    let base = gtk::CssProvider::new();
+    base.load_from_string(include_str!("style.css"));
+    gtk::style_context_add_provider_for_display(&display, &base, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
+    let palette = gtk::CssProvider::new();
+    gtk::style_context_add_provider_for_display(&display, &palette, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION + 1);
+    let manager = adw::StyleManager::default();
+    let paint = move |m: &adw::StyleManager| palette.load_from_string(if m.is_dark() { DARK } else { LIGHT });
+    paint(&manager);
+    manager.connect_dark_notify(paint);
+}
+
+/// A place to type. GTK gives a bare text box no accessible role, which
+/// leaves it invisible to screen readers; this one is a named text box.
+pub fn text_box(name: &str) -> gtk::Text {
+    let text: gtk::Text = glib::Object::builder().property("accessible-role", gtk::AccessibleRole::TextBox).build();
+    text.update_property(&[gtk::accessible::Property::Label(name)]);
+    text
 }
