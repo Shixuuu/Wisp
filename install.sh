@@ -30,13 +30,33 @@ if ! grep -qE '^(ID|ID_LIKE)=.*arch' /etc/os-release 2>/dev/null; then
 fi
 
 # Rust comes from the Arch package, unless a toolchain is already on PATH.
-deps=("${BUILD_DEPS[@]}" "${RUNTIME_DEPS[@]}")
+wanted=("${BUILD_DEPS[@]}" "${RUNTIME_DEPS[@]}")
 if ! command -v cargo >/dev/null 2>&1; then
-  deps+=(rust)
+  wanted+=(rust)
 fi
 
-say "Installing build and runtime dependencies"
-sudo pacman -S --needed --noconfirm "${deps[@]}"
+# Install only what is missing. `--needed` on its own is not enough: on a
+# derivative distribution the local build of a package can carry a higher
+# version than the upstream repository's, and pacman then treats the upstream
+# one as an upgrade and downgrades you to it.
+missing=()
+for p in "${wanted[@]}"; do
+  pacman -Qq "$p" >/dev/null 2>&1 || missing+=("$p")
+done
+
+if [ ${#missing[@]} -eq 0 ]; then
+  say "Build and runtime dependencies are already installed"
+else
+  say "Installing: ${missing[*]}"
+  if ! sudo pacman -S --needed --noconfirm "${missing[@]}"; then
+    die "installing dependencies failed.
+     If pacman reported 404s or 'failed to retrieve some files', its package
+     databases are older than the files on the mirrors. Refresh them and run
+     this installer again:
+
+         sudo pacman -Syu"
+  fi
+fi
 
 command -v makepkg >/dev/null 2>&1 || die "makepkg is still missing after installing base-devel"
 
