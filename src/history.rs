@@ -105,7 +105,7 @@ impl History {
                 self.visits.push(Visit { url: url.to_string(), title: title.to_string(), count: 1, last: when });
                 self.index.insert(key, self.visits.len() - 1);
                 if self.visits.len() > KEEP {
-                    self.visits.sort_by(|a, b| b.last.cmp(&a.last));
+                    self.visits.sort_by_key(|a| std::cmp::Reverse(a.last));
                     self.visits.truncate(KEEP * 9 / 10);
                     self.reindex();
                 }
@@ -153,7 +153,7 @@ impl History {
             })
             .cloned()
             .collect();
-        out.sort_by(|a, b| b.last.cmp(&a.last));
+        out.sort_by_key(|a| std::cmp::Reverse(a.last));
         out
     }
 
