@@ -909,6 +909,9 @@ impl TabList {
         } else {
             "audio-volume-high-symbolic"
         });
+        // A square pin tile would otherwise stretch the logo to the tile's height.
+        item.icon.set_halign(gtk::Align::Center);
+        item.icon.set_valign(gtk::Align::Center);
         if pinned {
             item.body.set_halign(gtk::Align::Center);
             item.label.set_hexpand(false);
