@@ -72,15 +72,6 @@ pub enum Look {
     System,
 }
 
-/// What a tab wears beside its title and on a pinned square.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum Glyph {
-    #[default]
-    Letters,
-    Icons,
-}
-
 /// A word typed before a search: "aw pacman" goes straight to the Arch Wiki.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Keyword {
@@ -109,7 +100,6 @@ pub struct Prefs {
     pub side_width: f64,
     /// Back, forward and reload before the tabs in the strip.
     pub navigation_left: bool,
-    pub glyph: Glyph,
     pub engine: Engine,
     pub custom_engine: String,
     pub keywords: Vec<Keyword>,
@@ -147,7 +137,6 @@ impl Default for Prefs {
             side_hides: false,
             side_width: SIDE,
             navigation_left: false,
-            glyph: Glyph::Letters,
             engine: Engine::Google,
             custom_engine: String::new(),
             keywords: arch_keywords(),

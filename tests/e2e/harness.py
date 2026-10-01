@@ -11,6 +11,7 @@
   and what was saved through the files Wisp writes.
 """
 
+import base64
 import http.server
 import json
 import os
@@ -30,6 +31,7 @@ from gi.repository import Atspi  # noqa: E402
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 BINARY = os.environ.get("WISP", os.path.join(ROOT, "target", "debug", "wisp"))
 ARTIFACTS = os.environ.get("E2E_ARTIFACTS", os.path.join(ROOT, "target", "e2e"))
+HAVE_XDOTOOL = shutil.which("xdotool") is not None
 
 ARTICLE = " ".join(["Pacman is the package manager of Arch Linux, simple and fast."] * 12)
 
@@ -114,7 +116,10 @@ class Server:
                 self.reports.setdefault(host, {}).update(state)
             return 204, "text/plain", b"", {}
         if path == "/favicon.ico":
-            return 404, "text/plain", b"", {}
+            png = base64.b64decode(
+                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+            )
+            return 200, "image/png", png, {}
         if host == "doubleclick.net":
             return 200, "application/javascript", "window.adLoaded = true;", {}
         if host == "search.test":
@@ -204,10 +209,12 @@ class App:
             "XDG_CACHE_HOME": os.path.join(self.home, ".cache"),
             "http_proxy": proxy,
             "HTTP_PROXY": proxy,
-            "GDK_BACKEND": "x11",
-            "LIBGL_ALWAYS_SOFTWARE": "1",
+            # xdotool only sees X11. Without it, Wayland plus wtype drives the same window.
+            "GDK_BACKEND": "x11" if HAVE_XDOTOOL else "wayland",
             "WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS": "1",
         })
+        if HAVE_XDOTOOL:
+            self.env["LIBGL_ALWAYS_SOFTWARE"] = "1"
         self.log = open(os.path.join(ARTIFACTS, f"{name}.log"), "w")
         # WISP_WRAP="gdb -batch -ex run -ex bt --args" runs it under a debugger.
         wrap = os.environ.get("WISP_WRAP", "").split()
@@ -215,6 +222,7 @@ class App:
         self.proc = subprocess.Popen([*wrap, BINARY, *args], env=self.env, stdout=self.log, stderr=subprocess.STDOUT)
         self.frame = wait("the window", self._frame, timeout=20)
         self.window = wait("the X window", self._xwindow, timeout=10)
+        self._home_ws = None
         time.sleep(0.8)
 
     # MARK: finding things
@@ -238,13 +246,25 @@ class App:
 
     def _xwindow(self):
         pid = self._application().get_process_id() if self.wrapped else self.proc.pid
-        out = subprocess.run(["xdotool", "search", "--pid", str(pid)], capture_output=True, text=True).stdout.split()
-        for wid in out:
-            geo = subprocess.run(["xdotool", "getwindowgeometry", "--shell", wid], capture_output=True, text=True).stdout
-            values = dict(line.split("=") for line in geo.split() if "=" in line)
-            if int(values.get("WIDTH", 0)) > 400:
-                self.origin = (int(values["X"]), int(values["Y"]))
-                return wid
+        if HAVE_XDOTOOL:
+            out = subprocess.run(["xdotool", "search", "--pid", str(pid)], capture_output=True, text=True).stdout.split()
+            for wid in out:
+                geo = subprocess.run(["xdotool", "getwindowgeometry", "--shell", wid], capture_output=True, text=True).stdout
+                values = dict(line.split("=") for line in geo.split() if "=" in line)
+                if int(values.get("WIDTH", 0)) > 400:
+                    self.origin = (int(values["X"]), int(values["Y"]))
+                    return wid
+            return None
+        listed = subprocess.run(["hyprctl", "clients", "-j"], capture_output=True, text=True)
+        if listed.returncode != 0 or not listed.stdout.strip():
+            return None
+        for client in json.loads(listed.stdout):
+            size = client.get("size") or [0, 0]
+            if client.get("pid") == pid and size[0] > 400:
+                at = client.get("at") or [0, 0]
+                self.origin = (int(at[0]), int(at[1]))
+                self.size = (int(size[0]), int(size[1]))
+                return str(client.get("address"))
         return None
 
     def nodes(self, role=None, name=None, contains=None, showing=True):
@@ -302,40 +322,97 @@ class App:
 
     # MARK: doing things
 
+    def _active_pid(self):
+        raw = subprocess.run(["hyprctl", "activewindow", "-j"], capture_output=True, text=True).stdout
+        if not raw.strip():
+            return None
+        try:
+            return json.loads(raw).get("pid")
+        except json.JSONDecodeError:
+            return None
+
     def focus(self):
-        subprocess.run(["xdotool", "windowactivate", "--sync", self.window], capture_output=True)
-        subprocess.run(["xdotool", "windowfocus", "--sync", self.window], capture_output=True)
+        if HAVE_XDOTOOL:
+            subprocess.run(["xdotool", "windowactivate", "--sync", self.window], capture_output=True)
+            subprocess.run(["xdotool", "windowfocus", "--sync", self.window], capture_output=True)
+            return
+        if self._home_ws is None:
+            current = subprocess.run(["hyprctl", "activeworkspace", "-j"], capture_output=True, text=True).stdout
+            if current.strip():
+                self._home_ws = json.loads(current).get("id")
+        pid = self.proc.pid
+        subprocess.run(["hyprctl", "dispatch", f'hl.dsp.window.focus({{ window = "pid:{pid}" }})'], capture_output=True)
+        time.sleep(0.2)
+        if self._active_pid() != pid:
+            subprocess.run(
+                ["hyprctl", "dispatch", f'hl.dsp.window.move({{ window = "pid:{pid}", workspace = "9", follow = true }})'],
+                capture_output=True,
+            )
+            time.sleep(0.3)
+        if self._active_pid() != pid:
+            raise Failure(f"refusing to type: the focused window is not this Wisp ({pid})")
 
     def key(self, *keys, pause=0.35, clear=True):
         self.focus()
         for k in keys:
-            subprocess.run(["xdotool", "key", *(["--clearmodifiers"] if clear else []), k], check=True)
+            if HAVE_XDOTOOL:
+                subprocess.run(["xdotool", "key", *(["--clearmodifiers"] if clear else []), k], check=True)
+            else:
+                _wtype_key(k)
             time.sleep(0.12)
         time.sleep(pause)
 
     def type(self, text, pause=0.4):
         self.focus()
-        subprocess.run(["xdotool", "type", "--delay", "40", text], check=True)
+        if HAVE_XDOTOOL:
+            subprocess.run(["xdotool", "type", "--delay", "40", text], check=True)
+        else:
+            subprocess.run(["wtype", "-d", "20", text], check=True)
         time.sleep(pause)
 
     def hold(self, key):
+        if not HAVE_XDOTOOL:
+            raise Failure("holding a key needs xdotool")
         subprocess.run(["xdotool", "keydown", key], check=True)
 
     def release(self, key):
+        if not HAVE_XDOTOOL:
+            raise Failure("releasing a key needs xdotool")
         subprocess.run(["xdotool", "keyup", key], check=True)
 
     def move(self, x, y):
         ox, oy = self.origin
-        subprocess.run(["xdotool", "mousemove", str(ox + x), str(oy + y)], check=True)
+        if HAVE_XDOTOOL:
+            subprocess.run(["xdotool", "mousemove", str(ox + x), str(oy + y)], check=True)
+        else:
+            Atspi.generate_mouse_event(ox + x, oy + y, "abs")
         time.sleep(0.2)
 
     def click(self, x, y, button=1, times=1):
         self.focus()
-        self.move(x, y)
-        subprocess.run(["xdotool", "click", "--repeat", str(times), "--delay", "80", str(button)], check=True)
-        time.sleep(0.45)
+        ox, oy = self.origin
+        for _ in range(times):
+            if HAVE_XDOTOOL:
+                self.move(x, y)
+                subprocess.run(["xdotool", "click", "--repeat", "1", "--delay", "80", str(button)], check=True)
+            else:
+                Atspi.generate_mouse_event(ox + x, oy + y, f"b{button}c")
+            time.sleep(0.2)
+        time.sleep(0.25)
 
     def click_node(self, node, button=1, times=1):
+        if not HAVE_XDOTOOL:
+            self.focus()
+            e = node.get_component_iface().get_extents(Atspi.CoordType.SCREEN)
+            cx, cy = e.x + e.width // 2, e.y + e.height // 2
+            for _ in range(times):
+                Atspi.generate_mouse_event(cx, cy, "abs")
+                Atspi.generate_mouse_event(cx, cy, f"b{button}p")
+                time.sleep(0.05)
+                Atspi.generate_mouse_event(cx, cy, f"b{button}r")
+                time.sleep(0.2)
+            time.sleep(0.25)
+            return
         x, y, w, h = self.box(node)
         self.click(x + w // 2, y + h // 2, button, times)
 
@@ -354,10 +431,20 @@ class App:
             self.click_node(node, button)
 
     def go(self, typed):
-        """Type into the address field and press Return."""
-        self.key("ctrl+l")
-        self.type(typed)
-        self.key("Return", pause=0.8)
+        """Type into the address field and press Return.
+
+        The first window of a session sometimes misses the first chord while
+        the desktop portal is still starting, so a navigation that is still
+        on the blank tab is typed again.
+        """
+        for _ in range(2):
+            self.key("ctrl+l")
+            wait("the address field", lambda: self.nodes(name="Address"), 8)
+            self.type(typed)
+            self.key("Return", pause=0.4)
+            time.sleep(0.7)
+            if self.title() not in (None, "", "New Tab", "Wisp"):
+                return
 
     def page_origin(self):
         """Where the page starts in the window: right of the column."""
@@ -401,7 +488,29 @@ class App:
 
     def close(self):
         # A test that failed holding a key must not leave it held.
-        subprocess.run(["xdotool", "keyup", "ctrl", "shift", "alt", "super"], capture_output=True)
+        if HAVE_XDOTOOL:
+            subprocess.run(["xdotool", "keyup", "ctrl", "shift", "alt", "super"], capture_output=True)
         self.quit()
+        if not HAVE_XDOTOOL and self._home_ws is not None:
+            subprocess.run(
+                ["hyprctl", "dispatch", f'hl.dsp.focus({{ workspace = "{self._home_ws}" }})'],
+                capture_output=True,
+            )
         if self.owns_home:
             shutil.rmtree(self.home, ignore_errors=True)
+
+
+def _wtype_key(combo):
+    """Turn an xdotool chord (`ctrl+shift+s`, `Return`) into a wtype invocation."""
+    parts = combo.split("+")
+    key, mods = parts[-1], parts[:-1]
+    args = []
+    for mod in mods:
+        args += ["-M", mod]
+    if len(key) == 1:
+        args.append(key)
+    else:
+        args += ["-k", key]
+    for mod in reversed(mods):
+        args += ["-m", mod]
+    subprocess.run(["wtype", *args], check=True)

@@ -96,7 +96,6 @@ pub struct Browser {
     page_holder: gtk::Box,
     chrome: Slide,
     slide: RefCell<Option<Tween>>,
-    room_ticket: Cell<u32>,
     pub ui: OnceCell<Ui>,
 }
 
@@ -167,7 +166,6 @@ impl Browser {
             page_holder,
             chrome,
             slide: RefCell::default(),
-            room_ticket: Cell::new(0),
             ui: OnceCell::new(),
         });
 
@@ -279,10 +277,9 @@ impl Browser {
         self.slide.borrow().clone().expect("chrome has a tween")
     }
 
-    /// The room the column or the strip takes from the page. Chrome going
-    /// away gives the page its room at once, and the page slides out from
-    /// under it; chrome arriving slides over the page, which gives up its
-    /// room once the slide is over (Search's `make(room:)`).
+    /// The room the column or the strip takes from the page. The page's
+    /// margin updates in the same call as the slide, so the address field
+    /// lays out in the page column and not across the sidebar.
     pub fn arrange(self: &Rc<Self>, animated: bool) {
         let shown = !self.folded.get() && !self.immersed.get();
         let (side, right, width) = {
@@ -293,7 +290,6 @@ impl Browser {
         let over = self.peeking.get() && !shown;
         let tween = self.tween();
         let target = if shown || over { 0.0 } else { 1.0 };
-        let was_hidden = tween.target() > 0.5;
         if animated {
             tween.to(target, Curve::Glide);
         } else {
@@ -313,21 +309,10 @@ impl Browser {
                 holder.set_margin_top(if side { 0 } else { r });
             }
         };
-        let ticket = self.room_ticket.get() + 1;
-        self.room_ticket.set(ticket);
-        if !shown {
-            set_room(0.0);
-        } else if animated && was_hidden {
-            let weak = self.weak();
-            glib::timeout_add_local_once(Duration::from_millis(420), move || {
-                if let Some(b) = weak.upgrade()
-                    && b.room_ticket.get() == ticket
-                {
-                    set_room(extent);
-                }
-            });
-        } else {
+        if shown {
             set_room(extent);
+        } else {
+            set_room(0.0);
         }
     }
 
@@ -589,19 +574,10 @@ impl Browser {
         self.select(&next);
     }
 
-    /// Ctrl+T. A blank tab already open is reused, not made again.
+    /// Ctrl+T. Always a new row, even when a blank tab is already open.
     pub fn new_tab(self: &Rc<Self>) {
         let shy = self.active().is_some_and(|t| t.shy);
-        let blank = self.tabs.borrow().iter().rev().find(|t| t.is_blank() && t.shy == shy).cloned();
-        let tab = match blank {
-            Some(t) => {
-                let last = self.tabs.borrow().len() - 1;
-                self.move_tab(&t, last);
-                *t.draft.borrow_mut() = String::new();
-                t
-            }
-            None => self.insert(None, "", shy, None),
-        };
+        let tab = self.insert(None, "", shy, None);
         self.select(&tab);
         if shy {
             self.announce("A tab that keeps nothing");
@@ -610,8 +586,7 @@ impl Browser {
 
     /// Ctrl+Shift+N.
     pub fn new_shy_tab(self: &Rc<Self>) {
-        let blank = self.tabs.borrow().iter().rev().find(|t| t.is_blank() && t.shy).cloned();
-        let tab = blank.unwrap_or_else(|| self.insert(None, "", true, None));
+        let tab = self.insert(None, "", true, None);
         self.select(&tab);
         self.announce("A tab that keeps nothing");
     }

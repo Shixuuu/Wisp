@@ -325,6 +325,14 @@ impl Presence {
         }
         self.tween.to(if on { 1.0 } else { 0.0 }, if on { Curve::Settle } else { Curve::Quick });
     }
+
+    /// Present at full size with no entrance of its own. The rows inside move.
+    pub fn reveal(&self) {
+        if !self.shown.replace(true) {
+            self.place.show(true);
+        }
+        self.tween.set(1.0);
+    }
 }
 
 /// The field shivers and stops: three there-and-backs, tapering to nothing.

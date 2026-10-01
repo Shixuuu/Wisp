@@ -10,6 +10,7 @@ window.wisp, .ground { background-color: @ground; color: @ink; }
 .strip { background-color: @ground; padding-right: 12px; }
 .peek > * { box-shadow: 4px 0 20px alpha(black, 0.14); }
 .foot { padding: 0 10px 10px 10px; min-height: 26px; }
+.mem { color: @muted; font-size: 11px; font-feature-settings: "tnum"; }
 windowcontrols button { min-width: 22px; min-height: 22px; padding: 2px; }
 
 .edge-line { min-width: 1px; background-color: transparent; transition: all 140ms ease-out; }
@@ -58,11 +59,6 @@ windowcontrols button { min-width: 22px; min-height: 22px; padding: 2px; }
 .live-ground.pin { background-color: @pinlive; }
 .reading { background-color: alpha(@ink, 0.045); }
 
-button.cross {
-  min-width: 15px; min-height: 15px; padding: 0; margin-right: 7px;
-  border-radius: 999px; background-color: alpha(@ink, 0.07); color: @muted; box-shadow: none;
-}
-button.cross image { -gtk-icon-size: 8px; }
 button.speaker { min-width: 15px; min-height: 15px; padding: 0; border-radius: 999px; background: none; color: @muted; box-shadow: none; }
 button.speaker:hover { background-color: alpha(@ink, 0.07); }
 button.speaker image { -gtk-icon-size: 9px; }
@@ -89,7 +85,7 @@ button.quiet:hover { background-color: @hover; color: alpha(@ink, 0.7); }
 .dim-page { background-color: alpha(@ground, 0.74); }
 .breath { border-radius: 14px; box-shadow: 0 0 26px 1px alpha(@ink, 0.07); }
 .field {
-  background-color: @ground;
+  background-color: alpha(@ground, 0.72);
   border: 1px solid @hairline;
   border-radius: 14px;
   padding: 14px 22px;

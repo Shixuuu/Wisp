@@ -1,6 +1,6 @@
-//! One field, in the middle of the page, and the few places it thinks you
-//! mean. Raised over a page by Ctrl+L, standing on its own on a blank tab,
-//! and, with Ctrl+K, a list of what is open and nothing else.
+//! One field at the top of the page, and the few places it thinks you mean.
+//! Raised over a page by Ctrl+L, standing on its own on a blank tab, and,
+//! with Ctrl+K, a list of what is open and nothing else.
 
 use crate::address;
 use crate::browser::Browser;
@@ -47,11 +47,14 @@ pub struct Omnibox {
     place: motion::Place,
     dim: gtk::Box,
     shaker: Slide,
+    column: Slide,
     frame: gtk::Box,
     pub text: gtk::Text,
     list: gtk::Box,
     list_presence: motion::Presence,
     shown: Tween,
+    /// Width of the pile. One spring, so a new keystroke continues it.
+    width: Tween,
     offers: RefCell<Vec<Offer>>,
     picked: Cell<Option<usize>>,
     typed: RefCell<String>,
@@ -91,27 +94,33 @@ impl Omnibox {
 
         let list = gtk::Box::new(gtk::Orientation::Vertical, 0);
         list.add_css_class("offers");
-        let list_presence = motion::Presence::new(&list, 0.98, 0.0);
+        list.set_overflow(gtk::Overflow::Visible);
+        let list_presence = motion::Presence::new(&list, 1.0, 0.0);
         list_presence.slide.set_anchor(0.5, 0.0);
         list_presence.root.set_valign(gtk::Align::Start);
         list_presence.root.set_margin_top(8);
+        list_presence.root.set_hexpand(true);
+        list_presence.root.set_overflow(gtk::Overflow::Visible);
+        list_presence.slide.set_overflow(gtk::Overflow::Visible);
 
-        let center = gtk::CenterBox::new();
-        center.set_orientation(gtk::Orientation::Vertical);
-        center.set_center_widget(Some(&shaker));
-        center.set_end_widget(Some(&list_presence.root));
-        center.set_start_widget(Some(&gtk::Box::new(gtk::Orientation::Vertical, 0)));
-        center.set_size_request(560, -1);
-        center.set_halign(gtk::Align::Center);
-        // Lifted a little above centre: dead centre reads as low.
-        center.set_margin_bottom(60);
-        let column = Slide::new(&center);
+        let pile = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        pile.set_size_request(560, -1);
+        pile.set_halign(gtk::Align::Center);
+        pile.set_valign(gtk::Align::Start);
+        pile.set_overflow(gtk::Overflow::Visible);
+        pile.append(&shaker);
+        pile.append(&list_presence.root);
+        let column = Slide::new(&pile);
         column.set_halign(gtk::Align::Center);
+        column.set_valign(gtk::Align::Start);
+        column.set_margin_top(12);
+        column.set_overflow(gtk::Overflow::Visible);
 
         let layer = gtk::Overlay::new();
         layer.set_child(Some(&dim));
         layer.add_overlay(&column);
         layer.set_vexpand(true);
+        layer.set_overflow(gtk::Overflow::Visible);
         let place = motion::Place::new(&layer);
         b.page.add_overlay(&place.root);
 
@@ -122,7 +131,10 @@ impl Omnibox {
             }
             d.set_opacity(t.clamp(0.0, 1.0));
             c.set_opacity(t.clamp(0.0, 1.0));
-            c.set_scale(0.97 + 0.03 * t);
+        });
+        let pile_width = pile.clone();
+        let width = Tween::new(&pile, 560.0, move |w| {
+            pile_width.set_size_request(w.round() as i32, -1);
         });
 
         let field = Rc::new(Omnibox {
@@ -130,11 +142,13 @@ impl Omnibox {
             place,
             dim,
             shaker,
+            column,
             frame,
             text,
             list,
             list_presence,
             shown,
+            width,
             offers: RefCell::default(),
             picked: Cell::new(None),
             typed: RefCell::default(),
@@ -156,6 +170,15 @@ impl Omnibox {
     }
 
     fn wire(self: &Rc<Self>) {
+        if let Some(layer) = self.column.parent() {
+            let me = Rc::downgrade(self);
+            layer.connect_notify_local(Some("width"), move |_, _| {
+                let Some(me) = me.upgrade() else { return };
+                if me.showing() {
+                    me.fit();
+                }
+            });
+        }
         let me = Rc::downgrade(self);
         self.text.connect_changed(move |t| {
             let Some(me) = me.upgrade() else { return };
@@ -168,9 +191,11 @@ impl Omnibox {
                 me.ending.take();
                 me.guess();
                 me.ending.take();
+                me.fit();
                 return;
             }
             me.guess();
+            me.fit();
             let ending = me.ending.borrow().clone();
             if let Some(ending) = ending.filter(|e| !e.is_empty()) {
                 // After GTK has finished the keystroke, and only if nothing
@@ -268,6 +293,7 @@ impl Omnibox {
         self.dim.set_can_target(over);
         self.place.show(true);
         self.shown.to(1.0, Curve::Settle);
+        self.fit();
         self.breathe(true);
         let text = self.text.clone();
         glib::idle_add_local_once(move || {
@@ -552,6 +578,9 @@ impl Omnibox {
             self.list.remove(&c);
         }
         let offers = self.offers.borrow().clone();
+        // Fade in only as the list opens. Arrow keys and later keystrokes rebuild
+        // the same list, and replaying the fade makes every row blink.
+        let arrive = !offers.is_empty() && !self.list_presence.shown();
         for (i, offer) in offers.iter().enumerate() {
             let row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
             row.add_css_class("offer");
@@ -601,9 +630,47 @@ impl Omnibox {
                 }
             });
             row.add_controller(click);
+            if arrive {
+                row.set_opacity(0.0);
+                let delay = (i as u64).min(7) * 40;
+                let moving = row.clone();
+                glib::timeout_add_local_once(Duration::from_millis(delay), move || {
+                    if moving.parent().is_none() {
+                        return;
+                    }
+                    motion::animate(&moving, 0.0, 1.0, Curve::Settle, {
+                        let moving = moving.clone();
+                        move |t| {
+                            moving.set_opacity(t);
+                            moving.set_margin_top(((1.0 - t) * 8.0).round() as i32);
+                        }
+                    });
+                });
+            }
             self.list.append(&row);
         }
-        self.list_presence.show(!offers.is_empty());
+        if offers.is_empty() {
+            self.list_presence.show(false);
+        } else {
+            self.list_presence.reveal();
+        }
+    }
+
+    /// 560 px at rest. Typing widens it to the page column, 12 px clear of each side.
+    fn fit(&self) {
+        let room = self.column.parent().map(|p| p.width()).unwrap_or(0);
+        let wide = !self.typed.borrow().trim().is_empty();
+        // Before the column has a width, stay at the rest size. Once it has
+        // one, the pill is the column minus 12 px on each side, and never wider.
+        let inset = (room - 24).max(1);
+        let want = if room < 80 {
+            560
+        } else if wide {
+            inset
+        } else {
+            560.min(inset)
+        };
+        self.width.to(want as f64, Curve::Settle);
     }
 
     /// A row clicked, taken directly.

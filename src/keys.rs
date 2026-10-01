@@ -190,6 +190,15 @@ fn take(b: &Rc<Browser>, key: gdk::Key, code: u32, mods: gdk::ModifierType) -> b
             }
             b.paste_and_go();
         }
+        gdk::Key::p if shift => {
+            if let Some(t) = b.active() {
+                if t.pin.borrow().is_some() {
+                    b.unpin(&t);
+                } else {
+                    b.pin(&t);
+                }
+            }
+        }
         gdk::Key::p if !shift => {
             if let Some(v) = view() {
                 webkit6::PrintOperation::new(&v).run_dialog(Some(&b.window));

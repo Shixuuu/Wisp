@@ -4,7 +4,7 @@
 use crate::address;
 use crate::browser::Browser;
 use crate::motion::{Curve, Presence, Slide, Tween};
-use crate::settings::{Engine, Glyph, Look};
+use crate::settings::{Engine, Look};
 use adw::prelude::*;
 use gtk::{gio, glib, pango};
 use std::cell::{Cell, RefCell};
@@ -1063,20 +1063,6 @@ fn tabs(b: &Rc<Browser>, page: &gtk::Box) {
             }),
         ));
     }
-    c.append(&rule(14));
-    let weak = b.weak();
-    let glyph = b.prefs.borrow().glyph;
-    c.append(&line(
-        "Tabs show",
-        Some("Beside the title, and on a pinned square"),
-        &segmented(&[(Glyph::Letters, "Letters"), (Glyph::Icons, "Icons")], glyph, move |g| {
-            if let Some(b) = weak.upgrade() {
-                b.prefs.borrow_mut().glyph = g;
-                b.prefs.borrow().save();
-                b.refresh_tabs();
-            }
-        }),
-    ));
     c.append(&rule(14));
     c.append(&line(
         "Show how far you've read",

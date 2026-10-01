@@ -7,13 +7,13 @@
 
 use crate::browser::{Browser, STRIP};
 use crate::motion::{Curve, Slide, Tween};
-use crate::settings::Glyph;
 use crate::tab::{Change, Tab};
 use adw::prelude::*;
 use gtk::{gdk, gio, glib, pango};
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::{Rc, Weak};
+use std::time::Duration;
 use webkit6::prelude::*;
 
 const ROW: f64 = 28.0;
@@ -35,7 +35,6 @@ struct Item {
     label: gtk::Label,
     spinner: gtk::Spinner,
     speaker: gtk::Button,
-    cross: gtk::Button,
     edit: gtk::Text,
     x: Tween,
     y: Tween,
@@ -186,6 +185,7 @@ impl TabList {
             foot.append(&fetch);
             let space = gtk::Box::new(gtk::Orientation::Horizontal, 0);
             space.set_hexpand(true);
+            space.append(&memory_readout());
             foot.append(&space);
             foot.append(&menu);
             column.append(&handle);
@@ -455,6 +455,7 @@ impl TabList {
         let icon = gtk::Image::new();
         icon.set_pixel_size(15);
         icon.add_css_class("favicon");
+        icon.update_property(&[gtk::accessible::Property::Label("Site icon")]);
         let shy = gtk::Image::from_icon_name("view-conceal-symbolic");
         shy.set_pixel_size(10);
         shy.add_css_class("shy");
@@ -473,12 +474,6 @@ impl TabList {
         let speaker = gtk::Button::from_icon_name("audio-volume-high-symbolic");
         speaker.add_css_class("speaker");
         speaker.set_visible(false);
-        let cross = gtk::Button::from_icon_name("window-close-symbolic");
-        cross.add_css_class("cross");
-        cross.set_valign(gtk::Align::Center);
-        cross.set_halign(gtk::Align::End);
-        cross.set_opacity(0.0);
-        cross.set_can_target(false);
         for w in [
             mark.upcast_ref::<gtk::Widget>(),
             icon.upcast_ref(),
@@ -490,10 +485,7 @@ impl TabList {
         ] {
             body.append(w);
         }
-        let overlay = gtk::Overlay::new();
-        overlay.set_child(Some(&body));
-        overlay.add_overlay(&cross);
-        let slide = Slide::new(&overlay);
+        let slide = Slide::new(&body);
         slide.set_anchor(0.0, 0.5);
         let (x, y) = axes(&self.board, &slide);
         let item = Rc::new(Item {
@@ -505,7 +497,6 @@ impl TabList {
             label,
             spinner,
             speaker,
-            cross,
             edit,
             x,
             y,
@@ -528,37 +519,32 @@ impl TabList {
         let set_hover = move |on: bool| {
             let Some(item) = it.upgrade() else { return };
             item.hovering.set(on);
-            if on {
-                item.body.add_css_class("hover")
-            } else {
-                item.body.remove_css_class("hover")
-            }
-            let show = on && !item.pinned.get() && !WidgetExt::is_visible(&item.edit);
-            item.cross.set_can_target(show);
-            let cross = item.cross.clone();
-            crate::motion::animate(
-                &item.cross,
-                item.cross.opacity(),
-                if show { 1.0 } else { 0.0 },
-                Curve::Quick,
-                move |t| cross.set_opacity(t),
-            );
-            item.label.set_margin_end(if show { 20 } else { 0 });
-            item.spinner.set_opacity(if show { 0.0 } else { 1.0 });
+            if on { item.body.add_css_class("hover") } else { item.body.remove_css_class("hover") }
         };
         let s = set_hover.clone();
         hover.connect_enter(move |_, _, _| s(true));
         hover.connect_leave(move |_| set_hover(false));
         item.slide.add_controller(hover);
 
+        // Menu and Shift+F10 open the same menu as a right-click, so a row
+        // can be pinned from the keyboard.
+        item.body.set_focusable(true);
+        let keys = gtk::EventControllerKey::new();
         let weak = b.weak();
-        item.cross.connect_clicked(move |_| {
-            if let Some(b) = weak.upgrade()
-                && let Some(t) = b.tab(id)
-            {
-                b.close(&t);
+        let anchor = item.slide.clone();
+        keys.connect_key_pressed(move |_, key, _, mods| {
+            let menu_key =
+                key == gdk::Key::Menu || (key == gdk::Key::F10 && mods.contains(gdk::ModifierType::SHIFT_MASK));
+            if !menu_key {
+                return glib::Propagation::Proceed;
             }
+            let Some(b) = weak.upgrade() else { return glib::Propagation::Proceed };
+            let Some(tab) = b.tab(id) else { return glib::Propagation::Proceed };
+            menu(&b, &tab, &anchor, 8.0, 8.0);
+            glib::Propagation::Stop
         });
+        item.body.add_controller(keys);
+
         let weak = b.weak();
         item.speaker.connect_clicked(move |_| {
             let Some(t) = weak.upgrade().and_then(|b| b.tab(id)) else { return };
@@ -729,20 +715,19 @@ impl TabList {
         let Some(item) = self.items.borrow().get(&tab.id).cloned() else { return };
         let live = b.is_active(tab);
         let pinned = tab.pin.borrow().is_some();
-        let icons = b.prefs.borrow().glyph == Glyph::Icons;
         item.pinned.set(pinned);
         for (class, on) in [("live", live), ("pinned", pinned), ("asleep", tab.asleep()), ("side", self.side)] {
             if on { item.body.add_css_class(class) } else { item.body.remove_css_class(class) }
         }
         let loading = tab.loading.get() && !tab.asleep();
         let texture = tab.icon.borrow().clone();
-        let show_icon = icons && texture.is_some() && !(pinned && loading);
+        // A pin's letter is the thing the user chose. The favicon is for ordinary rows.
+        let show_icon = texture.is_some() && !pinned;
         item.icon.set_paintable(texture.as_ref());
         item.icon.set_visible(show_icon);
         let mark_text = if pinned { tab.pin.borrow().clone().unwrap_or_default() } else { tab.monogram() };
         item.mark.set_label(&mark_text);
-        // A pin shows its letter (or icon); a row shows its mark only with icons on.
-        item.mark.set_visible(if pinned { !show_icon && !loading } else { icons && !show_icon && !tab.is_blank() });
+        item.mark.set_visible(!show_icon && !loading && (pinned || !tab.is_blank()));
         if pinned {
             item.mark.add_css_class("letter")
         } else {
@@ -861,7 +846,6 @@ impl TabList {
         item.edit.set_text(&text);
         item.label.set_visible(false);
         item.edit.set_visible(true);
-        item.cross.set_opacity(0.0);
         item.edit.grab_focus();
         item.edit.select_region(0, -1);
         self.relayout();
@@ -1000,6 +984,87 @@ fn compact(item: &Item, on: bool) {
         item.label.set_visible(!item.pinned.get());
         item.body.set_halign(gtk::Align::Fill);
     }
+}
+
+/// A quiet figure for the footer. Pages live in child processes, so the
+/// window's own number would leave them out.
+fn memory_readout() -> gtk::Label {
+    let label = gtk::Label::new(None);
+    label.add_css_class("mem");
+    label.set_halign(gtk::Align::End);
+    label.set_valign(gtk::Align::Center);
+    label.set_margin_end(8);
+    label.set_tooltip_text(Some("Memory in use"));
+    let shown = label.clone();
+    let paint = move || {
+        let kib = resident_kib();
+        if kib == 0 {
+            shown.set_visible(false);
+            return;
+        }
+        shown.set_visible(true);
+        let text = memory_text(kib);
+        if shown.text().as_str() != text {
+            shown.set_text(&text);
+        }
+    };
+    paint();
+    let watch = label.clone();
+    glib::timeout_add_local(Duration::from_secs(2), move || {
+        if watch.parent().is_none() {
+            return glib::ControlFlow::Break;
+        }
+        paint();
+        glib::ControlFlow::Continue
+    });
+    label
+}
+
+/// Whole mebibytes until a gibibyte, then one decimal. Small enough to stay
+/// a single glance in the footer.
+fn memory_text(kib: u64) -> String {
+    if kib >= 1024 * 1024 {
+        format!("{:.1} GB", kib as f64 / (1024.0 * 1024.0))
+    } else if kib >= 1024 {
+        format!("{} MB", kib / 1024)
+    } else {
+        format!("{kib} KB")
+    }
+}
+
+fn resident_kib() -> u64 {
+    fn rss(pid: u32) -> u64 {
+        let Ok(text) = std::fs::read_to_string(format!("/proc/{pid}/status")) else { return 0 };
+        for line in text.lines() {
+            let Some(rest) = line.strip_prefix("VmRSS:") else { continue };
+            return rest.split_whitespace().next().and_then(|n| n.parse().ok()).unwrap_or(0);
+        }
+        0
+    }
+    fn children(pid: u32) -> Vec<u32> {
+        let mut out = Vec::new();
+        let Ok(tasks) = std::fs::read_dir(format!("/proc/{pid}/task")) else { return out };
+        for task in tasks.flatten() {
+            let Ok(text) = std::fs::read_to_string(task.path().join("children")) else { continue };
+            for word in text.split_whitespace() {
+                if let Ok(kid) = word.parse() {
+                    out.push(kid);
+                }
+            }
+        }
+        out
+    }
+    fn walk(pid: u32, depth: u32, seen: &mut HashSet<u32>) -> u64 {
+        if depth > 6 || !seen.insert(pid) {
+            return 0;
+        }
+        let mut total = rss(pid);
+        for kid in children(pid) {
+            total += walk(kid, depth + 1, seen);
+        }
+        total
+    }
+    walk(std::process::id(), 0, &mut HashSet::new())
 }
 
 /// A small square holding one symbol.
@@ -1181,4 +1246,22 @@ fn main_menu() -> gio::Menu {
         ]),
     );
     menu
+}
+
+#[cfg(test)]
+mod memory_figure {
+    use super::memory_text;
+
+    #[test]
+    fn writes_a_short_figure() {
+        let small = memory_text(512);
+        let mid = memory_text(128 * 1024);
+        let big = memory_text(1536 * 1024);
+        println!("{small}");
+        println!("{mid}");
+        println!("{big}");
+        assert_eq!(small, "512 KB");
+        assert_eq!(mid, "128 MB");
+        assert_eq!(big, "1.5 GB");
+    }
 }

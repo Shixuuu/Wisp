@@ -155,12 +155,12 @@ def clicking_tabs_in_the_sidebar(app):
 def pinning_a_tab(app):
     app.go("http://news.test")
     shown(app, "news.test")
-    app.press("the tab", role="label", name="Daily News", button=3)
-    app.see("its menu", role="menu")
-    # Pin comes first; GTK 4.14 leaves menu items nameless.
-    app.nodes(role="menu item")[0].get_action_iface().do_action(0)
+    wait("the favicon request", lambda: app.server.asked("news.test", "/favicon.ico"), 8)
+    app.see("the site icon before pinning", role="image", name="Site icon")
+    app.key("ctrl+shift+p")
     wait("the pin written down", lambda: any(t.get("pin") == "N" for t in (app.read("session.json") or {}).get("tabs", [])))
     app.see("the pin's letter", role="label", name="N")
+    check("the favicon hid the pin letter", not app.has(role="image", name="Site icon"))
 
 
 @test
@@ -367,6 +367,92 @@ def settings_change_the_look(app):
 
 
 # MARK: the chrome
+
+
+@test
+def sidebar_row_has_no_close_button(app):
+    app.go("http://news.test")
+    shown(app, "news.test")
+    # The window's own Close control stays. A row button would sit beside the title.
+    titles = app.nodes(role="label", name="Daily News")
+    check("the row", titles)
+    row = titles[0]
+    parent = row.get_parent()
+    names = []
+    if parent is not None:
+        for i in range(parent.get_child_count()):
+            child = parent.get_child_at_index(i)
+            if child is None:
+                continue
+            role = child.get_role_name() or ""
+            if "button" in role.lower():
+                names.append(child.get_name() or "")
+    check("a close button on a row", not any("close" in name.lower() for name in names))
+
+
+@test
+def sidebar_row_shows_favicon(app):
+    app.go("http://news.test")
+    shown(app, "news.test")
+    wait("the favicon request", lambda: app.server.asked("news.test", "/favicon.ico"), 8)
+    app.see("the site icon on the row", role="image", name="Site icon")
+    check("a blank row has no bullet", "•" not in app.texts())
+
+
+@test
+def ctrl_t_keeps_adding_tabs(app):
+    for _ in range(10):
+        app.key("ctrl+t", pause=0.05)
+    wait("eleven tabs after ten Ctrl+T", lambda: tab_titles(app).count("New Tab") == 11)
+    app.press("the new-tab control", role="push button", name="New tab")
+    wait("the button inserts another", lambda: tab_titles(app).count("New Tab") == 12)
+    check("a blank row has no bullet", "•" not in app.texts())
+
+
+def address_box(app):
+    for role in ("text", "entry", "text box"):
+        found = app.nodes(role=role, name="Address")
+        if found:
+            return found[0]
+    return app.see("the address field", name="Address")
+
+
+@test
+def address_field_sits_at_the_top(app):
+    # A fresh window is a blank tab, so the field is already up.
+    field = address_box(app)
+    _, top, _, _ = app.box(field)
+    check(f"the field starts near the top ({top})", top < 80)
+    app.type("hello")
+    time.sleep(0.6)
+    field = address_box(app)
+    # The accessible text sits inside the pill's padding. The pill is its parent.
+    pill = field.get_parent() or field
+    x, y, w, h = app.box(pill)
+    _, _, window_w, _ = app.box(app._frame())
+    title = app.see("the blank row", role="label", name="New Tab")
+    row = title.get_parent()
+    rx, _, rw, _ = app.box(row)
+    gap = x - (rx + rw)
+    right = window_w - (x + w)
+    check(f"twelve pixels clear of the sidebar ({gap})", 8 <= gap <= 40)
+    check(f"the enlarged pill reaches the other side ({right})", 4 <= right <= 40)
+    check(f"still at the top ({y})", y < 80)
+    rows = [n for n in app.nodes(role="label") if (n.get_name() or "") == "hello"]
+    check("a suggestion", rows)
+    below = [n for n in rows if app.box(n)[1] > y]
+    check("the suggestion is under the field", below)
+    rx, ry, _, rh = app.box(below[0])
+    check(f"the suggestion extends below the field ({ry + rh} > {y + h})", ry + rh > y + h)
+    check(f"the suggestion is not left of the field ({rx} >= {x - 4})", rx >= x - 4)
+
+
+@test
+def sidebar_shows_memory(app):
+    def figure():
+        return any(t.endswith((" KB", " MB", " GB")) for t in app.texts())
+
+    wait("a memory figure in the sidebar", figure)
 
 
 @test
