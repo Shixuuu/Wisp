@@ -1,6 +1,6 @@
 //! One field at the top of the page, and the few places it thinks you mean.
-//! Raised over a page by Ctrl+L, standing on its own on a blank tab, and,
-//! with Ctrl+K, a list of what is open and nothing else.
+//! On a blank tab it stands alone. On a page it stays as a short glass pill
+//! that widens when you type. Ctrl+K lists only what is open.
 
 use crate::address;
 use crate::browser::Browser;
@@ -82,6 +82,9 @@ impl Omnibox {
         text.set_input_purpose(gtk::InputPurpose::Url);
         let frame = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         frame.add_css_class("field");
+        frame.set_overflow(gtk::Overflow::Hidden);
+        text.set_width_chars(16);
+        text.set_max_width_chars(16);
         frame.append(&text);
         // The glow behind the field, breathing slowly while it is up.
         let glow = gtk::Box::new(gtk::Orientation::Horizontal, 0);
@@ -124,12 +127,11 @@ impl Omnibox {
         let place = motion::Place::new(&layer);
         b.page.add_overlay(&place.root);
 
-        let (d, c, p) = (dim.clone(), column.clone(), place.clone());
+        let (c, p) = (column.clone(), place.clone());
         let shown = Tween::new(&layer, 0.0, move |t| {
             if t <= 0.001 {
                 p.settle();
             }
-            d.set_opacity(t.clamp(0.0, 1.0));
             c.set_opacity(t.clamp(0.0, 1.0));
         });
         let pile_width = pile.clone();
@@ -170,9 +172,9 @@ impl Omnibox {
     }
 
     fn wire(self: &Rc<Self>) {
-        if let Some(layer) = self.column.parent() {
+        if let Some(page) = self.place.root.parent() {
             let me = Rc::downgrade(self);
-            layer.connect_notify_local(Some("width"), move |_, _| {
+            page.connect_notify_local(Some("width"), move |_, _| {
                 let Some(me) = me.upgrade() else { return };
                 if me.showing() {
                     me.fit();
@@ -262,6 +264,23 @@ impl Omnibox {
             }
         });
         self.dim.add_controller(click);
+
+        let me = Rc::downgrade(self);
+        self.text.connect_notify_local(Some("has-focus"), move |text, _| {
+            let Some(me) = me.upgrade() else { return };
+            if !text.has_focus() || !me.on_page() || me.editing.get() {
+                return;
+            }
+            me.editing.set(true);
+            *me.typed.borrow_mut() = text.text().to_string();
+            me.veil(true);
+            let text = text.clone();
+            glib::idle_add_local_once(move || {
+                if text.has_focus() {
+                    text.select_region(0, -1);
+                }
+            });
+        });
     }
 
     fn set_text(&self, text: &str) {
@@ -282,23 +301,57 @@ impl Omnibox {
         self.summoning.get()
     }
 
-    /// Put the field up, over the page or on its own.
+    /// Put the field up. `over` catches clicks on the page so they leave the field.
     fn show(&self, over: bool) {
-        // Not hidden: a hidden widget throws off GTK 4.14's accessibility tree.
-        if over {
-            self.dim.add_css_class("dim-page");
-        } else {
-            self.dim.remove_css_class("dim-page");
-        }
-        self.dim.set_can_target(over);
         self.place.show(true);
         self.shown.to(1.0, Curve::Settle);
+        self.veil(over);
         self.fit();
-        self.breathe(true);
+        if over {
+            self.breathe(false);
+            self.glow.set_opacity(0.0);
+        } else {
+            self.breathe(true);
+        }
         let text = self.text.clone();
         glib::idle_add_local_once(move || {
             text.grab_focus_without_selecting();
         });
+    }
+
+    /// The short pill over a page. The page keeps the clicks and the focus.
+    fn park(&self) {
+        self.place.show(true);
+        if self.showing() {
+            self.shown.set(1.0);
+        } else {
+            self.shown.to(1.0, Curve::Settle);
+        }
+        self.breathe(false);
+        self.glow.set_opacity(0.0);
+        self.veil(false);
+        self.fit();
+    }
+
+    fn on_page(&self) -> bool {
+        self.browser().and_then(|b| b.active()).is_some_and(|t| !t.is_blank())
+    }
+
+    /// Cover the page with an invisible click catcher, or shrink back to the pill
+    /// so the rest of the page can be used.
+    fn veil(&self, catch: bool) {
+        self.dim.set_opacity(0.0);
+        self.dim.remove_css_class("dim-page");
+        self.dim.set_visible(catch);
+        self.dim.set_can_target(catch);
+        if let Some(layer) = self.column.parent() {
+            layer.set_hexpand(catch);
+            layer.set_vexpand(catch);
+        }
+        self.place.root.set_hexpand(catch);
+        self.place.root.set_vexpand(catch);
+        self.place.root.set_halign(if catch { gtk::Align::Fill } else { gtk::Align::Center });
+        self.place.root.set_valign(if catch { gtk::Align::Fill } else { gtk::Align::Start });
     }
 
     /// 2.6 s in, 2.6 s out. Stepped a dozen times a second rather than every
@@ -326,20 +379,8 @@ impl Omnibox {
         }));
     }
 
-    fn hide(&self) {
-        self.breathe(false);
-        self.place.release();
-        self.shown.to(0.0, Curve::Quick);
-        self.list_presence.show(false);
-        if let Some(b) = self.browser()
-            && let Some(v) = b.active().and_then(|t| t.view.borrow().clone())
-        {
-            v.grab_focus();
-        }
-    }
-
     /// A tab came forward: a blank one shows the field with what was typed
-    /// there before; any other puts it away.
+    /// there before. A page keeps the short pill, showing that page's address.
     pub fn follow(&self, tab: &crate::tab::Tab) {
         self.editing.set(false);
         self.summoning.set(false);
@@ -355,8 +396,12 @@ impl Omnibox {
             self.text.set_position(-1);
         } else {
             self.typed.borrow_mut().clear();
-            self.set_text("");
-            self.hide();
+            self.set_text(&tab.address());
+            self.offers.borrow_mut().clear();
+            self.picked.set(None);
+            self.ending.take();
+            self.render();
+            self.park();
         }
     }
 
@@ -444,8 +489,19 @@ impl Omnibox {
             return;
         }
         self.editing.set(false);
+        self.offers.borrow_mut().clear();
+        self.picked.set(None);
+        self.ending.take();
+        let url = self.browser().and_then(|b| b.active()).map(|t| t.address()).unwrap_or_default();
         self.typed.borrow_mut().clear();
-        self.hide();
+        self.set_text(&url);
+        self.render();
+        self.park();
+        if let Some(b) = self.browser()
+            && let Some(v) = b.active().and_then(|t| t.view.borrow().clone())
+        {
+            v.grab_focus();
+        }
     }
 
     fn accept_ending(&self) {
@@ -654,21 +710,31 @@ impl Omnibox {
         } else {
             self.list_presence.reveal();
         }
+        self.veil(self.on_page() && (self.editing.get() || !offers.is_empty()));
     }
 
-    /// 560 px at rest. Typing widens it to the page column, 12 px clear of each side.
+    /// 560 px on a blank tab, 400 px over a page. Typing widens it to the page
+    /// column, 12 px clear of each side.
     fn fit(&self) {
-        let room = self.column.parent().map(|p| p.width()).unwrap_or(0);
-        let wide = !self.typed.borrow().trim().is_empty();
-        // Before the column has a width, stay at the rest size. Once it has
-        // one, the pill is the column minus 12 px on each side, and never wider.
+        let room = self.place.root.parent().map(|p| p.width()).unwrap_or(0);
+        let address = self.browser().and_then(|b| b.active()).map(|t| t.address()).unwrap_or_default();
+        let typed = self.typed.borrow().clone();
+        let wide = !self.offers.borrow().is_empty() || (!typed.trim().is_empty() && typed != address);
+        let rest = if self.on_page() { 400 } else { 560 };
+        if self.on_page() && !wide {
+            self.frame.add_css_class("rest");
+        } else {
+            self.frame.remove_css_class("rest");
+        }
+        // Before the page has a width, stay at the rest size. Once it has
+        // one, a typed pill is the page minus 12 px on each side, and never wider.
         let inset = (room - 24).max(1);
         let want = if room < 80 {
-            560
+            rest
         } else if wide {
             inset
         } else {
-            560.min(inset)
+            rest.min(inset)
         };
         self.width.to(want as f64, Curve::Settle);
     }

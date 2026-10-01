@@ -90,6 +90,11 @@ impl Tween {
         self.inner.target.get()
     }
 
+    /// Remember where this is going without moving it yet.
+    pub fn aim(&self, to: f64) {
+        self.inner.target.set(to);
+    }
+
     /// Move there along a curve. Sending it where it is already going does
     /// nothing, so it can be asked every time something might have changed.
     pub fn to(&self, to: f64, curve: Curve) {

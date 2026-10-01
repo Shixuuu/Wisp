@@ -60,6 +60,7 @@ fn page_first(b: &Browser, key: gdk::Key, mods: gdk::ModifierType) -> bool {
             ))
         || (k == gdk::Key::z && b.veiling.get())
         || (k == gdk::Key::k && !shift)
+        || (k == gdk::Key::g && shift)
         || matches!(k, gdk::Key::Tab | gdk::Key::ISO_Left_Tab);
     !reserved
 }
@@ -205,7 +206,8 @@ fn take(b: &Rc<Browser>, key: gdk::Key, code: u32, mods: gdk::ModifierType) -> b
             }
         }
         gdk::Key::f if !shift => ui.bars.open_find(),
-        gdk::Key::g => ui.bars.look(!shift),
+        gdk::Key::g if shift => b.gather_active(),
+        gdk::Key::g => ui.bars.look(true),
         gdk::Key::m if shift => {
             if let Some(t) = b.active() {
                 t.js("document.querySelectorAll('video,audio').forEach(function(m){m.pause()})");
@@ -349,6 +351,10 @@ fn actions(b: &Rc<Browser>) {
         b.window.add_action(&action);
     };
     on_tab("tab-pin", |b, t| b.pin(t));
+    on_tab("tab-group", |b, t| {
+        b.select(t);
+        b.gather_active();
+    });
     on_tab("tab-unpin", |b, t| b.unpin(t));
     on_tab("tab-letter", |b, t| {
         if let Some(list) = b.ui().tabs.borrow().as_ref() {

@@ -2,6 +2,7 @@
 and drives it with keys and clicks. Run with tests/e2e/run.sh."""
 
 import os
+import subprocess
 import sys
 import time
 import traceback
@@ -30,6 +31,34 @@ def tab_titles(app):
 
 def shown(app, host):
     return wait(f"{host} to load", lambda: app.server.report(host), 12)
+
+
+PAGES = [
+    ("http://news.test", "news.test", "Daily News", "N"),
+    ("http://shop.test", "shop.test", "Corner Shop", "S"),
+    ("http://docs.test", "docs.test", "Arch Docs", "D"),
+    ("http://blog.test", "blog.test", "A Blog", "B"),
+]
+
+
+def load(app, url, host):
+    app.go(url)
+    shown(app, host)
+    wait(f"the {host} favicon", lambda: app.server.asked(host, "/favicon.ico"), 8)
+
+
+def crop(app, name):
+    evidence = os.environ.get("WISP_EVIDENCE")
+    if not evidence:
+        return
+    app._xwindow()
+    w, h = getattr(app, "size", (0, 0))
+    if w < 100:
+        return
+    x, y = app.origin
+    path = os.path.join(evidence, f"{name}.png")
+    subprocess.run(["grim", "-g", f"{int(x)},{int(y)} {int(w)}x{int(h)}", path], check=False)
+    print(f"    crop {path}", flush=True)
 
 
 # MARK: searching and going places
@@ -153,14 +182,229 @@ def clicking_tabs_in_the_sidebar(app):
 
 @test
 def pinning_a_tab(app):
-    app.go("http://news.test")
-    shown(app, "news.test")
-    wait("the favicon request", lambda: app.server.asked("news.test", "/favicon.ico"), 8)
+    load(app, "http://news.test", "news.test")
     app.see("the site icon before pinning", role="image", name="Site icon")
     app.key("ctrl+shift+p")
     wait("the pin written down", lambda: any(t.get("pin") == "N" for t in (app.read("session.json") or {}).get("tabs", [])))
-    app.see("the pin's letter", role="label", name="N")
-    check("the favicon hid the pin letter", not app.has(role="image", name="Site icon"))
+    app.see("the pin keeps its site icon", role="image", name="Site icon")
+    check("a pin draws no letter", not app.has(role="label", name="N"))
+    check("a pin draws no title", not app.has(role="label", name="Daily News"))
+
+
+def pin_grid(app):
+    """Four loaded pins, then one ordinary row. Returns the icon boxes."""
+
+    def ready():
+        icons = app.nodes(role="image", name="Site icon")
+        if len(icons) != 4:
+            return None
+        boxes = sorted((app.box(n) for n in icons), key=lambda b: (b[1], b[0]))
+        top = [b for b in boxes if abs(b[1] - boxes[0][1]) <= 12]
+        floor = boxes[0][1] + max(boxes[0][3] * 0.6, 16)
+        bottom = [b for b in boxes if b[1] >= floor]
+        if len(top) != 2 or len(bottom) != 2:
+            return None
+        if min(b[1] for b in bottom) < max(b[1] + b[3] for b in top) - 4:
+            return None
+        for row in (top, bottom):
+            row = sorted(row, key=lambda b: b[0])
+            if row[1][0] < row[0][0] + row[0][2] + 2:
+                return None
+        loose = app.nodes(role="label", name="New Tab")
+        if not loose:
+            return None
+        pin_bottom = max(b[1] + b[3] for b in boxes)
+        if app.box(loose[0])[1] < pin_bottom + 6:
+            return None
+        return boxes
+
+    return wait("a 2 by 2 pin grid", ready, 4)
+
+
+@test
+def four_pins_sit_in_two_rows(app):
+    for i, (url, host, title, letter) in enumerate(PAGES):
+        if i:
+            app.key("ctrl+t")
+        load(app, url, host)
+        app.key("ctrl+shift+p")
+    app.key("ctrl+t")
+    boxes = pin_grid(app)
+    print(f"    pins {boxes}", flush=True)
+    for _, _, title, letter in PAGES:
+        check(f"no pin letter {letter}", not app.has(role="label", name=letter))
+        check(f"no pin title {title}", not app.has(role="label", name=title))
+    crop(app, "pins")
+
+
+@test
+def a_group_folds_to_three_icons(app):
+    for i, (url, host, title, _) in enumerate(PAGES):
+        if i:
+            app.key("ctrl+t")
+        load(app, url, host)
+        app.see(f"the {host} icon", role="image", name="Site icon")
+        app.key("ctrl+shift+g")
+    app.see("the open group", name="Collapse group")
+    for _, _, title, _ in PAGES:
+        app.see(f"the member {title}", role="label", name=title)
+    app.press("collapse", name="Collapse group")
+    wait("the group folded", lambda: app.has(name="Expand group"))
+
+    def folded():
+        icons = app.nodes(role="image", name="Group icon")
+        if len(icons) != 3:
+            return None
+        if not app.has(role="label", name="+"):
+            return None
+        for _, _, title, _ in PAGES:
+            if app.has(role="label", name=title):
+                return None
+        return icons
+
+    wait("three icons and a plus", folded, 4)
+    crop(app, "group")
+    app.press("expand", name="Expand group")
+
+    def shop_row():
+        rows = app.nodes(role="label", name="Corner Shop")
+        headers = [n for n in app.nodes(name="Collapse group") if "button" in (n.get_role_name() or "")]
+        if not rows or not headers:
+            return None
+        _, ry, _, _ = app.box(rows[0])
+        _, hy, _, hh = app.box(headers[0])
+        # The row has to finish its slide out from under the folder.
+        if ry < hy + hh + 4:
+            return None
+        return rows[0]
+
+    row = wait("the shop row below the group", shop_row, 4)
+    rx, ry, rw, rh = app.box(row)
+    app.pointer_click(rx + rw // 2, ry + rh // 2)
+    wait("the shop is showing", lambda: app.title() == "Corner Shop", 6)
+
+
+def pane_nodes(app):
+    """The split-pane labels, found without entering a page document.
+
+    The page column is the window's first child. Walking it first reaches
+    the panes before the sidebar, so a read during the glide still sees it.
+    """
+    found = []
+
+    def walk(node, depth=0):
+        if depth > 30 or node is None or len(found) >= 3:
+            return
+        try:
+            role = node.get_role_name() or ""
+            name = node.get_name() or ""
+            count = node.get_child_count()
+        except Exception:
+            return
+        if "document" in role:
+            return
+        if name == "Split pane":
+            found.append(node)
+        for i in range(count):
+            if len(found) >= 3:
+                return
+            try:
+                walk(node.get_child_at_index(i), depth + 1)
+            except Exception:
+                pass
+
+    walk(app._frame())
+    return found
+
+
+def pane_boxes(app, nodes=None):
+    nodes = pane_nodes(app) if nodes is None else nodes
+    return sorted((app.box(n) for n in nodes), key=lambda b: (b[0], b[1]))
+
+
+@test
+def dragging_a_tab_splits_the_page(app):
+    load(app, "http://news.test", "news.test")
+    app.key("ctrl+t")
+    load(app, "http://shop.test", "shop.test")
+    # The third page has to exist before the split. Opening it afterwards
+    # selects it, and selecting a tab that is not in the split closes the split.
+    app.key("ctrl+t")
+    load(app, "http://docs.test", "docs.test")
+    shop = app.see("the shop row", role="label", name="Corner Shop")
+    sx, sy, sw, sh = app.box(shop)
+    app.pointer_click(sx + sw // 2, sy + sh // 2)
+    wait("the shop is the page", lambda: app.title() == "Corner Shop", 6)
+    news = app.see("the news row", role="label", name="Daily News")
+    _, _, window_w, window_h = app.box(app._frame())
+    side = int(app.prefs().get("side_width", 232))
+    start_w = window_w - side
+    left_x = side + 48
+    right_x = side + max((window_w - side) * 3 // 4, 80)
+    y = max(window_h // 2, 180)
+    app.drag(news, left_x, y)
+    # Find the panes once, then re-read those same rectangles through the glide.
+    nodes = []
+    seen = []
+    deadline = time.perf_counter() + 0.5
+    while time.perf_counter() < deadline:
+        if len(nodes) != 2:
+            nodes = pane_nodes(app)
+        if len(nodes) == 2:
+            seen.append(pane_boxes(app, nodes))
+        if len(seen) >= 8:
+            break
+        time.sleep(0.012)
+    time.sleep(0.45)
+    pair = pane_boxes(app)
+    pair = sorted(pair, key=lambda b: b[0])
+
+    def midway(sample):
+        """How far a pane width sits from both where it began and where it rests."""
+        sample = sorted(sample, key=lambda b: b[0])
+        if len(sample) != 2 or len(pair) != 2:
+            return 0
+        room = 0
+        for before, after in zip(sample, pair):
+            began = start_w if before[2] > after[2] else 36
+            lo, hi = min(began, after[2]), max(began, after[2])
+            room += min(before[2] - lo, hi - before[2])
+        return room
+
+    early = max(seen, key=midway) if seen else None
+    widths = [tuple(round(b[2]) for b in sorted(s, key=lambda b: b[0])) for s in seen]
+    print(f"    samples {widths}", flush=True)
+    print(f"    early {early}", flush=True)
+    print(f"    pair {pair}", flush=True)
+    check(f"two panes after the drop {pair}", len(pair) == 2 and early is not None and len(early) == 2)
+    early = sorted(early or [], key=lambda b: b[0])
+    gap = pair[1][0] - (pair[0][0] + pair[0][2])
+    check(f"the panes sit side by side ({gap})", 2 <= gap <= 24)
+    check("the panes share the page height", abs(pair[0][3] - pair[1][3]) < 30)
+    moved = False
+    for before, after in zip(early, pair):
+        began = start_w if before[2] > after[2] else 36
+        lo, hi = min(began, after[2]), max(began, after[2])
+        # A frame from the glide, not the sliver it leaves from and not the rectangle it rests on.
+        if lo + 24 < before[2] < hi - 24:
+            moved = True
+            print(f"    width {before[2]} between {began} and {after[2]}", flush=True)
+    check("a pane was between its start and its rest", moved)
+    docs = app.see("the docs row", role="label", name="Arch Docs")
+    app.drag(docs, right_x, y)
+    time.sleep(0.75)
+    grid = pane_boxes(app)
+    packed = [(round(b[0]), round(b[1]), round(b[2]), round(b[3])) for b in grid]
+    print(f"    FINAL {packed}", flush=True)
+    check(f"three panes {packed}", len(grid) == 3)
+    large = max(grid, key=lambda b: b[3])
+    stacked = [b for b in grid if b is not large]
+    stacked = sorted(stacked, key=lambda b: b[1])
+    check("one pane is taller than the other two", large[3] > stacked[0][3] * 1.4 and large[3] > stacked[1][3] * 1.4)
+    check("the shorter panes share a column", abs(stacked[0][0] - stacked[1][0]) < 16)
+    check("the shorter panes are stacked", stacked[1][1] >= stacked[0][1] + stacked[0][3] - 4)
+    check("the tall pane is beside that column", abs(large[0] - stacked[0][0]) > 40)
+    crop(app, "grid")
 
 
 @test
@@ -370,10 +614,36 @@ def settings_change_the_look(app):
 
 
 @test
+def reload_sits_in_the_right_corner(app):
+    app.go("http://news.test")
+    shown(app, "news.test")
+    back = app.see("back", name="Back   Ctrl+[")
+    forward = app.see("forward", name="Forward   Ctrl+]")
+    reload = app.see("reload", name="Reload   Ctrl+R")
+    bx, _, _, _ = app.box(back)
+    fx, _, _, _ = app.box(forward)
+    rx, _, rw, _ = app.box(reload)
+    check(f"back stays left of forward ({bx} < {fx})", bx < fx)
+    check(f"forward stays left of reload ({fx} < {rx})", fx < rx)
+    title = app.see("the page row", role="label", name="Daily News")
+    row = title.get_parent() or title
+    _, _, row_w, _ = app.box(row)
+    row_right = app.box(row)[0] + row_w
+    reload_right = rx + rw
+    check(
+        f"reload meets the header's right edge ({reload_right} vs {row_right})",
+        abs(reload_right - row_right) <= 24,
+    )
+    app.server.forget()
+    app.press("reload", name="Reload   Ctrl+R")
+    wait("reload asks for the page again", lambda: app.server.asked("news.test", "/"), 8)
+
+
+@test
 def sidebar_row_has_no_close_button(app):
     app.go("http://news.test")
     shown(app, "news.test")
-    # The window's own Close control stays. A row button would sit beside the title.
+    # Neither a row nor the sidebar header has a close button.
     titles = app.nodes(role="label", name="Daily News")
     check("the row", titles)
     row = titles[0]
@@ -388,6 +658,7 @@ def sidebar_row_has_no_close_button(app):
             if "button" in role.lower():
                 names.append(child.get_name() or "")
     check("a close button on a row", not any("close" in name.lower() for name in names))
+    check("a close button in the sidebar", not app.nodes(name="Close"))
 
 
 @test
@@ -445,6 +716,38 @@ def address_field_sits_at_the_top(app):
     rx, ry, _, rh = app.box(below[0])
     check(f"the suggestion extends below the field ({ry + rh} > {y + h})", ry + rh > y + h)
     check(f"the suggestion is not left of the field ({rx} >= {x - 4})", rx >= x - 4)
+
+
+@test
+def address_pill_rests_on_a_page(app):
+    app.go("http://news.test")
+    shown(app, "news.test")
+    field = address_box(app)
+    _, top, _, _ = app.box(field)
+    check(f"the pill stays up over the page ({top})", top < 100)
+    pill = field.get_parent() or field
+    _, _, w, h = app.box(pill)
+    check(f"the resting pill is short ({h})", h < 64)
+    check(f"the resting pill stays narrow ({w})", 200 <= w <= 460)
+    app.key("ctrl+l")
+    app.type("hello")
+    time.sleep(0.6)
+    field = address_box(app)
+    pill = field.get_parent() or field
+    x, y, w, h = app.box(pill)
+    _, _, window_w, _ = app.box(app._frame())
+    title = app.see("the page row", role="label", name="Daily News")
+    row = title.get_parent()
+    rx, _, rw, _ = app.box(row)
+    gap = x - (rx + rw)
+    right = window_w - (x + w)
+    check(f"typing widens it clear of the sidebar ({gap})", 8 <= gap <= 40)
+    check(f"the enlarged pill reaches the other side ({right})", 4 <= right <= 40)
+    rows = [n for n in app.nodes(role="label") if (n.get_name() or "") == "hello"]
+    below = [n for n in rows if app.box(n)[1] > y]
+    check("a suggestion slides out under the pill", below)
+    ry = app.box(below[0])[1]
+    check(f"the suggestion is below the pill ({ry} > {y + h - 4})", ry + 4 > y + h)
 
 
 @test

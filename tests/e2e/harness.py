@@ -33,6 +33,19 @@ BINARY = os.environ.get("WISP", os.path.join(ROOT, "target", "debug", "wisp"))
 ARTIFACTS = os.environ.get("E2E_ARTIFACTS", os.path.join(ROOT, "target", "e2e"))
 HAVE_XDOTOOL = shutil.which("xdotool") is not None
 
+
+def hypr(*args):
+    """Talk to the compositor on the user's bus.
+
+    The tests themselves run on a private session bus, which hyprctl cannot
+    use. WISP_HYPR_BUS is that user bus, captured before the private one.
+    """
+    env = dict(os.environ)
+    bus = os.environ.get("WISP_HYPR_BUS")
+    if bus:
+        env["DBUS_SESSION_BUS_ADDRESS"] = bus
+    return subprocess.run(["hyprctl", *args], capture_output=True, text=True, env=env)
+
 ARTICLE = " ".join(["Pacman is the package manager of Arch Linux, simple and fast."] * 12)
 
 PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>{title}</title>
@@ -255,7 +268,7 @@ class App:
                     self.origin = (int(values["X"]), int(values["Y"]))
                     return wid
             return None
-        listed = subprocess.run(["hyprctl", "clients", "-j"], capture_output=True, text=True)
+        listed = hypr("clients", "-j")
         if listed.returncode != 0 or not listed.stdout.strip():
             return None
         for client in json.loads(listed.stdout):
@@ -323,7 +336,7 @@ class App:
     # MARK: doing things
 
     def _active_pid(self):
-        raw = subprocess.run(["hyprctl", "activewindow", "-j"], capture_output=True, text=True).stdout
+        raw = hypr("activewindow", "-j").stdout
         if not raw.strip():
             return None
         try:
@@ -337,17 +350,14 @@ class App:
             subprocess.run(["xdotool", "windowfocus", "--sync", self.window], capture_output=True)
             return
         if self._home_ws is None:
-            current = subprocess.run(["hyprctl", "activeworkspace", "-j"], capture_output=True, text=True).stdout
+            current = hypr("activeworkspace", "-j").stdout
             if current.strip():
                 self._home_ws = json.loads(current).get("id")
         pid = self.proc.pid
-        subprocess.run(["hyprctl", "dispatch", f'hl.dsp.window.focus({{ window = "pid:{pid}" }})'], capture_output=True)
+        hypr("dispatch", f'hl.dsp.window.focus({{ window = "pid:{pid}" }})')
         time.sleep(0.2)
         if self._active_pid() != pid:
-            subprocess.run(
-                ["hyprctl", "dispatch", f'hl.dsp.window.move({{ window = "pid:{pid}", workspace = "9", follow = true }})'],
-                capture_output=True,
-            )
+            hypr("dispatch", f'hl.dsp.window.move({{ window = "pid:{pid}", workspace = "9", follow = true }})')
             time.sleep(0.3)
         if self._active_pid() != pid:
             raise Failure(f"refusing to type: the focused window is not this Wisp ({pid})")
@@ -455,6 +465,55 @@ class App:
         px, py = self.page_origin()
         self.click(px + x, py + y, button)
 
+    def _pointer_bin(self):
+        binary = os.path.join(ROOT, "target", "e2e", "virtual_pointer")
+        source = os.path.join(ROOT, "tests", "e2e", "virtual_pointer.c")
+        if not os.path.exists(binary) or os.path.getmtime(source) > os.path.getmtime(binary):
+            os.makedirs(os.path.dirname(binary), exist_ok=True)
+            subprocess.run(["gcc", "-O2", "-o", binary, source, "-lwayland-client"], check=True)
+        return binary
+
+    def _pointer_env(self):
+        env = dict(os.environ)
+        listed = hypr("monitors", "-j")
+        if listed.returncode == 0 and listed.stdout.strip():
+            monitor = json.loads(listed.stdout)[0]
+            scale = float(monitor.get("scale") or 1) or 1
+            width = int(round(monitor["width"] / scale))
+            height = int(round(monitor["height"] / scale))
+            env["POINTER_EXTENT"] = f"{width},{height}"
+        return env
+
+    def _screen(self, x, y):
+        self._xwindow()
+        return self.origin[0] + int(x), self.origin[1] + int(y)
+
+    def pointer_click(self, x, y):
+        """A real compositor click at window coordinates."""
+        self.focus()
+        sx, sy = self._screen(x, y)
+        subprocess.run([self._pointer_bin(), "click", str(sx), str(sy)], check=True, env=self._pointer_env())
+        time.sleep(0.35)
+
+    def drag(self, node, x, y, steps=16):
+        """Press `node` and release at window coordinates `(x, y)`.
+
+        The motion is a virtual pointer the compositor delivers, because
+        AT-SPI mouse events do not become Wayland pointer events here.
+        `steps` is unused; the helper moves across about a third of a second.
+        """
+        del steps
+        self.focus()
+        bx, by, bw, bh = self.box(node)
+        sx, sy = self._screen(bx + max(bw, 1) // 2, by + max(bh, 1) // 2)
+        ex, ey = self.origin[0] + int(x), self.origin[1] + int(y)
+        subprocess.run(
+            [self._pointer_bin(), "drag", str(sx), str(sy), str(ex), str(ey)],
+            check=True,
+            env=self._pointer_env(),
+        )
+        time.sleep(0.02)
+
     # MARK: what was written down
 
     def file(self, *parts):
@@ -492,10 +551,7 @@ class App:
             subprocess.run(["xdotool", "keyup", "ctrl", "shift", "alt", "super"], capture_output=True)
         self.quit()
         if not HAVE_XDOTOOL and self._home_ws is not None:
-            subprocess.run(
-                ["hyprctl", "dispatch", f'hl.dsp.focus({{ workspace = "{self._home_ws}" }})'],
-                capture_output=True,
-            )
+            hypr("dispatch", f'hl.dsp.focus({{ workspace = "{self._home_ws}" }})')
         if self.owns_home:
             shutil.rmtree(self.home, ignore_errors=True)
 

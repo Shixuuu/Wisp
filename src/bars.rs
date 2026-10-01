@@ -198,6 +198,23 @@ impl Bars {
                 me.look(true);
             }
         });
+        // Ctrl+Shift+G now groups the active tab. Shift+Enter still walks
+        // back through the matches.
+        let previous = gtk::EventControllerKey::new();
+        previous.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let me = Rc::downgrade(&bars);
+        previous.connect_key_pressed(move |_, key, _, mods| {
+            if matches!(key, gtk::gdk::Key::Return | gtk::gdk::Key::KP_Enter)
+                && mods.contains(gtk::gdk::ModifierType::SHIFT_MASK)
+            {
+                if let Some(me) = me.upgrade() {
+                    me.look(false);
+                }
+                return glib::Propagation::Stop;
+            }
+            glib::Propagation::Proceed
+        });
+        bars.needle.add_controller(previous);
         let me = Rc::downgrade(&bars);
         up.connect_clicked(move |_| {
             if let Some(me) = me.upgrade() {

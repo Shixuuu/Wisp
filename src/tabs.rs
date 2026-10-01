@@ -6,10 +6,11 @@
 //! serve both ways of showing tabs, laid out the other way.
 
 use crate::browser::{Browser, STRIP};
+use crate::layout::{self, Side};
 use crate::motion::{Curve, Slide, Tween};
 use crate::tab::{Change, Tab};
 use adw::prelude::*;
-use gtk::{gdk, gio, glib, pango};
+use gtk::{gdk, gio, glib, graphene, pango};
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::{Rc, Weak};
@@ -18,7 +19,6 @@ use webkit6::prelude::*;
 
 const ROW: f64 = 28.0;
 const GAP: f64 = 2.0;
-const SQUARE: f64 = 34.0;
 const PIN_GAP: f64 = 4.0;
 const TAB_WIDTH: f64 = 186.0;
 const TAB_TITLED: f64 = 80.0;
@@ -45,6 +45,16 @@ struct Item {
     pinned: Cell<bool>,
 }
 
+struct GroupRow {
+    slide: Slide,
+    face: gtk::Box,
+    icons: [gtk::Image; 3],
+    plus: gtk::Label,
+    caption: gtk::Label,
+    toggle: gtk::Button,
+    y: Tween,
+}
+
 pub struct TabList {
     pub root: gtk::Widget,
     b: Weak<Browser>,
@@ -52,6 +62,7 @@ pub struct TabList {
     board: gtk::Fixed,
     scroller: gtk::ScrolledWindow,
     items: RefCell<HashMap<u64, Rc<Item>>>,
+    groups: RefCell<HashMap<u64, Rc<GroupRow>>>,
     pill: gtk::Box,
     fill: gtk::Box,
     pill_x: Tween,
@@ -119,9 +130,16 @@ impl TabList {
                 }
             });
         }
+        let nav = gtk::Box::new(gtk::Orientation::Horizontal, 4);
         let helm_box = gtk::Box::new(gtk::Orientation::Horizontal, 4);
-        for d in &helm {
-            helm_box.append(d);
+        if side {
+            nav.append(&helm[0]);
+            nav.append(&helm[1]);
+            helm[2].set_valign(gtk::Align::Center);
+        } else {
+            for d in &helm {
+                helm_box.append(d);
+            }
         }
 
         let fetch_ring = gtk::DrawingArea::new();
@@ -152,14 +170,14 @@ impl TabList {
             let head = gtk::Box::new(gtk::Orientation::Horizontal, 0);
             head.set_size_request(-1, STRIP as i32);
             head.append(&gtk::WindowControls::new(gtk::PackType::Start));
-            head.append(&helm_box);
+            head.append(&nav);
             let space = gtk::Box::new(gtk::Orientation::Horizontal, 0);
             space.set_hexpand(true);
             head.append(&space);
-            head.append(&gtk::WindowControls::new(gtk::PackType::End));
+            head.append(&helm[2]);
             head.set_margin_start(10);
             head.set_margin_end(10);
-            helm_box.set_valign(gtk::Align::Center);
+            nav.set_valign(gtk::Align::Center);
             let handle = gtk::WindowHandle::new();
             handle.set_child(Some(&head));
             scroller.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
@@ -266,6 +284,7 @@ impl TabList {
             board,
             scroller,
             items: RefCell::default(),
+            groups: RefCell::default(),
             pill,
             fill,
             pill_x,
@@ -350,6 +369,7 @@ impl TabList {
         let loose: Vec<&Rc<Tab>> = tabs.iter().filter(|t| t.pin.borrow().is_none()).collect();
         let place = |tab: &Rc<Tab>, x: f64, y: f64, w: f64, h: f64| {
             let Some(item) = items.get(&tab.id) else { return };
+            item.slide.set_visible(true);
             item.width.set(w);
             item.height.set(h);
             item.slide.set_size_request(w as i32, h as i32);
@@ -369,15 +389,19 @@ impl TabList {
         };
         if self.side {
             let room = b.prefs.borrow().side_width - 20.0;
-            let cells = pin_cells(pins.len(), room);
+            let cells = layout::pin_cells(pins.len(), room, PIN_GAP);
             for (tab, cell) in pins.iter().zip(&cells) {
-                place(tab, cell.0, cell.1, cell.2, cell.3);
+                place(tab, cell.x, cell.y, cell.w, cell.h);
             }
-            let mut y = cells.iter().map(|c| c.1 + c.3).fold(0.0, f64::max);
+            let mut y = cells.iter().map(|cell| cell.y + cell.h).fold(0.0, f64::max);
             if !pins.is_empty() {
                 y += 10.0;
             }
+            let grouped = self.place_groups(&b, &loose, room, &mut y, &place);
             for tab in &loose {
+                if grouped.contains(&tab.id) {
+                    continue;
+                }
                 place(tab, 0.0, y, room, ROW);
                 y += ROW + GAP;
             }
@@ -414,6 +438,124 @@ impl TabList {
         }
         drop(items);
         self.place_pill(&b);
+    }
+
+    /// Groups sit under the pins. A collapsed group is its icons. An expanded
+    /// one lists the member rows. Returns the tab ids a group claimed.
+    fn place_groups(
+        &self,
+        b: &Rc<Browser>,
+        loose: &[&Rc<Tab>],
+        room: f64,
+        y: &mut f64,
+        place: &impl Fn(&Rc<Tab>, f64, f64, f64, f64),
+    ) -> HashSet<u64> {
+        let groups = b.groups.borrow().clone();
+        let live: HashSet<u64> = groups.iter().map(|group| group.id).collect();
+        let stale: Vec<u64> = self.groups.borrow().keys().copied().filter(|id| !live.contains(id)).collect();
+        for id in stale {
+            if let Some(row) = self.groups.borrow_mut().remove(&id)
+                && row.slide.parent().is_some()
+            {
+                self.board.remove(&row.slide);
+            }
+        }
+        let mut claimed = HashSet::new();
+        for group in &groups {
+            let row = self.ensure_group(b, group.id);
+            self.dress_group(b, &row, group);
+            let new = row.slide.parent().is_none();
+            if new {
+                self.board.put(&row.slide, 0.0, *y);
+            }
+            row.slide.set_size_request(room as i32, ROW as i32);
+            row.y.to(*y, Curve::Settle);
+            *y += ROW + GAP;
+            if group.collapsed {
+                for id in &group.members {
+                    claimed.insert(*id);
+                    if let Some(item) = self.items.borrow().get(id) {
+                        item.slide.set_visible(false);
+                    }
+                }
+                continue;
+            }
+            for id in &group.members {
+                claimed.insert(*id);
+                let Some(tab) = loose.iter().find(|tab| tab.id == *id).copied() else { continue };
+                place(tab, 0.0, *y, room, ROW);
+                *y += ROW + GAP;
+            }
+        }
+        claimed
+    }
+
+    fn ensure_group(&self, b: &Rc<Browser>, id: u64) -> Rc<GroupRow> {
+        if let Some(row) = self.groups.borrow().get(&id).cloned() {
+            return row;
+        }
+        let face = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+        face.set_halign(gtk::Align::Start);
+        face.set_valign(gtk::Align::Center);
+        let icons = [0, 1, 2].map(|_| {
+            let icon = gtk::Image::new();
+            icon.set_pixel_size(14);
+            icon.add_css_class("favicon");
+            icon.update_property(&[gtk::accessible::Property::Label("Group icon")]);
+            icon.set_visible(false);
+            face.append(&icon);
+            icon
+        });
+        let plus = gtk::Label::new(Some("+"));
+        plus.add_css_class("group-more");
+        plus.set_visible(false);
+        face.append(&plus);
+        let caption = gtk::Label::new(Some("Collapse group"));
+        caption.set_visible(false);
+        let inside = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        inside.append(&face);
+        inside.append(&caption);
+        inside.set_margin_start(8);
+        inside.set_margin_end(8);
+        let toggle = gtk::Button::new();
+        toggle.set_child(Some(&inside));
+        toggle.add_css_class("group");
+        toggle.set_hexpand(true);
+        let weak = b.weak();
+        toggle.connect_clicked(move |_| {
+            if let Some(b) = weak.upgrade() {
+                b.toggle_group(id);
+            }
+        });
+        let slide = Slide::new(&toggle);
+        slide.set_anchor(0.0, 0.5);
+        let (board, widget) = (self.board.clone(), slide.clone());
+        let at = Rc::new(Cell::new(0.0_f64));
+        let y = Tween::new(&self.board, 0.0, move |v| {
+            at.set(v);
+            if widget.parent().is_some() {
+                board.move_(&widget, 0.0, v);
+            }
+        });
+        let row = Rc::new(GroupRow { slide, face, icons, plus, caption, toggle, y });
+        self.groups.borrow_mut().insert(id, row.clone());
+        row
+    }
+
+    fn dress_group(&self, b: &Browser, row: &GroupRow, group: &crate::layout::Group) {
+        let (shown, more) = layout::group_face(group.members.len());
+        let name = if group.collapsed { "Expand group" } else { "Collapse group" };
+        row.toggle.update_property(&[gtk::accessible::Property::Label(name)]);
+        row.toggle.set_tooltip_text(Some(name));
+        row.caption.set_visible(!group.collapsed);
+        row.face.set_visible(group.collapsed);
+        row.plus.set_visible(group.collapsed && more);
+        for (index, icon) in row.icons.iter().enumerate() {
+            let member = group.collapsed.then(|| group.members.get(index)).flatten();
+            let texture = member.and_then(|id| b.tab(*id)).and_then(|tab| tab.icon.borrow().clone());
+            icon.set_paintable(texture.as_ref());
+            icon.set_visible(group.collapsed && index < shown && texture.is_some());
+        }
     }
 
     /// The width the strip can give its tabs.
@@ -595,26 +737,46 @@ impl TabList {
         let weak = b.weak();
         let it = Rc::downgrade(item);
         let start = Rc::new(Cell::new((0.0, 0.0)));
+        let origin = Rc::new(Cell::new((0.0, 0.0)));
+        let landed = Rc::new(Cell::new(None::<Side>));
         let s = start.clone();
-        drag.connect_drag_begin(move |_, _, _| {
-            if let Some(item) = it.upgrade() {
-                s.set((item.x.value(), item.y.value()));
+        let origin_begin = origin.clone();
+        let weak_begin = b.weak();
+        drag.connect_drag_begin(move |_, x, y| {
+            let Some(item) = it.upgrade() else { return };
+            s.set((item.x.value(), item.y.value()));
+            // dx and dy later are from this press, not from the widget's corner.
+            if let Some(b) = weak_begin.upgrade()
+                && let Some(point) = item.slide.compute_point(&b.window, &graphene::Point::new(x as f32, y as f32))
+            {
+                origin_begin.set((point.x() as f64, point.y() as f64));
             }
         });
         let it = Rc::downgrade(item);
         let s = start.clone();
+        let origin_move = origin.clone();
+        let landed_move = landed.clone();
         drag.connect_drag_update(move |_, dx, dy| {
             let (Some(b), Some(item)) = (weak.upgrade(), it.upgrade()) else { return };
             let Some(tab) = b.tab(id) else { return };
             if WidgetExt::is_visible(&item.edit) {
                 return;
             }
+            let (ox, oy) = origin_move.get();
+            let over = drop_side(&b, ox + dx, oy + dy);
+            // A drag onto the page is horizontal. The column only measures
+            // vertical travel, so the page itself has to arm the gesture.
             let travel = if side { dy } else { dx };
-            if !item.held.get() && travel.abs() < 5.0 {
+            if !item.held.get() && travel.abs() < 5.0 && over.is_none() {
                 return;
             }
             item.held.set(true);
             item.slide.add_css_class("held");
+            if let Some(side) = over {
+                landed_move.set(Some(side));
+                return;
+            }
+            landed_move.set(None);
             let (x0, y0) = s.get();
             let (x, y) = if side && item.pinned.get() {
                 (x0 + dx, y0 + dy)
@@ -639,10 +801,15 @@ impl TabList {
             }
             item.slide.remove_css_class("held");
             item.held.set(false);
-            if let Some(b) = weak.upgrade()
-                && let Some(list) = b.ui().tabs.borrow().as_ref()
-            {
-                list.relayout();
+            if let Some(b) = weak.upgrade() {
+                if let Some(side) = landed.take()
+                    && let Some(tab) = b.tab(id)
+                {
+                    b.split_drop(&tab, side);
+                }
+                if let Some(list) = b.ui().tabs.borrow().as_ref() {
+                    list.relayout();
+                }
             }
             // The press that ended the carry is not also a click.
             item.held.set(true);
@@ -721,18 +888,14 @@ impl TabList {
         }
         let loading = tab.loading.get() && !tab.asleep();
         let texture = tab.icon.borrow().clone();
-        // A pin's letter is the thing the user chose. The favicon is for ordinary rows.
-        let show_icon = texture.is_some() && !pinned;
+        // A pin is only its site icon. The letter stays in the session and is not drawn.
+        let show_icon = texture.is_some() && (pinned || !tab.is_blank());
+        item.icon.set_pixel_size(if pinned { 22 } else { 15 });
         item.icon.set_paintable(texture.as_ref());
         item.icon.set_visible(show_icon);
-        let mark_text = if pinned { tab.pin.borrow().clone().unwrap_or_default() } else { tab.monogram() };
-        item.mark.set_label(&mark_text);
-        item.mark.set_visible(!show_icon && !loading && (pinned || !tab.is_blank()));
-        if pinned {
-            item.mark.add_css_class("letter")
-        } else {
-            item.mark.remove_css_class("letter")
-        }
+        item.mark.set_label(&tab.monogram());
+        item.mark.set_visible(!pinned && !show_icon && !loading && !tab.is_blank());
+        item.mark.remove_css_class("letter");
         item.shy.set_visible(tab.shy && !pinned);
         item.label.set_label(&tab.label());
         item.label.set_visible(!pinned && !WidgetExt::is_visible(&item.edit));
@@ -940,27 +1103,24 @@ pub fn axes(board: &gtk::Fixed, child: &impl IsA<gtk::Widget>) -> (Tween, Tween)
     (x, y)
 }
 
-/// Where each pinned square goes: at most four to a row, as even as they
-/// go, the fuller rows first; a single row keeps three places.
-fn pin_cells(count: usize, room: f64) -> Vec<(f64, f64, f64, f64)> {
-    if count == 0 {
-        return vec![];
+/// The half of the page a dragged tab is over, once the pointer has left the sidebar.
+fn drop_side(b: &Browser, x: f64, y: f64) -> Option<Side> {
+    if y < 0.0 || y > b.window.height() as f64 {
+        return None;
     }
-    let fits = (((room + PIN_GAP) / (SQUARE + PIN_GAP)) as usize).max(1);
-    let most = fits.min(4);
-    let rows = count.div_ceil(most);
-    let (base, extra) = (count / rows, count % rows);
-    let counts: Vec<usize> = (0..rows).map(|r| if r < extra { base + 1 } else { base }).collect();
-    let slots: Vec<usize> = counts.iter().map(|&n| if rows == 1 { n.max(3.min(fits)) } else { n }).collect();
-    let widths: Vec<f64> = slots.iter().map(|&n| ((room - (n as f64 - 1.0) * PIN_GAP) / n as f64).max(20.0)).collect();
-    let height = widths.iter().copied().fold(SQUARE, f64::min);
-    let mut cells = vec![];
-    for (r, &n) in counts.iter().enumerate() {
-        for c in 0..n {
-            cells.push((c as f64 * (widths[r] + PIN_GAP), r as f64 * (height + PIN_GAP), widths[r], height));
-        }
+    let width = b.window.width() as f64;
+    let prefs = b.prefs.borrow();
+    let (left, right) = if !prefs.sidebar {
+        (0.0, width)
+    } else if prefs.side_right {
+        (0.0, (width - prefs.side_width).max(0.0))
+    } else {
+        (prefs.side_width, width)
+    };
+    if x < left + 12.0 || x > right {
+        return None;
     }
-    cells
+    Some(if x < (left + right) / 2.0 { Side::Left } else { Side::Right })
 }
 
 /// A new piece arrives growing from its leading edge.
@@ -1161,9 +1321,9 @@ fn menu(b: &Rc<Browser>, tab: &Rc<Tab>, anchor: &Slide, x: f64, y: f64) {
     if tab.pin.borrow().is_none() {
         if !tab.is_blank() && !tab.shy {
             first.append_item(&item("Pin", "win.tab-pin"));
+            first.append_item(&item("Group Tab", "win.tab-group"));
         }
     } else {
-        first.append_item(&item("Change Letter", "win.tab-letter"));
         first.append_item(&item("Unpin", "win.tab-unpin"));
     }
     menu.append_section(None, &first);

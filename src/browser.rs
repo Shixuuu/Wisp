@@ -5,10 +5,12 @@ use crate::bars::Bars;
 use crate::bookmarks::Bookmarks;
 use crate::curtain::Curtain;
 use crate::history::History;
+use crate::layout::{self, Group, Side, Split};
 use crate::loot::{Keep, Loot};
 use crate::motion::{Curve, Slide, Tween};
 use crate::omnibox::Omnibox;
 use crate::panels::Panels;
+use crate::panes::Panes;
 use crate::settings::{Look, Prefs};
 use crate::store;
 use crate::switcher::Switcher;
@@ -46,6 +48,22 @@ pub struct Fetch {
 struct Saved {
     tabs: Vec<SavedTab>,
     active: usize,
+    #[serde(default)]
+    groups: Vec<SavedGroup>,
+    #[serde(default)]
+    split: Option<SavedSplit>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct SavedGroup {
+    members: Vec<usize>,
+    collapsed: bool,
+}
+
+#[derive(Serialize, Deserialize)]
+enum SavedSplit {
+    Pair { left: usize, right: usize },
+    Grid { large: usize, stacked: [usize; 2], stack_left: bool },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -86,6 +104,12 @@ pub struct Browser {
     pub veiling: Cell<bool>,
     immersed: Cell<bool>,
     saving: Cell<bool>,
+    pub groups: RefCell<Vec<Group>>,
+    next_group: Cell<u64>,
+    split: RefCell<Option<Split>>,
+    /// True while a split is being placed, so a size notify cannot snap it.
+    splitting: Cell<bool>,
+    panes: Panes,
     /// The root of the window: the frame, and everything floating over it.
     pub root: gtk::Overlay,
     /// The page, and what floats over the page alone.
@@ -123,6 +147,8 @@ impl Browser {
         let (trouble, trouble_text, retry) = trouble_page();
         let page = gtk::Overlay::new();
         page.set_child(Some(&stage));
+        let panes = Panes::new();
+        page.add_overlay(&panes.root);
         let trouble = crate::motion::Place::new(&trouble);
         page.add_overlay(&trouble.root);
 
@@ -158,6 +184,11 @@ impl Browser {
             veiling: Cell::new(false),
             immersed: Cell::new(false),
             saving: Cell::new(false),
+            groups: RefCell::default(),
+            next_group: Cell::new(1),
+            split: RefCell::default(),
+            splitting: Cell::new(false),
+            panes,
             root,
             page,
             stage,
@@ -189,6 +220,23 @@ impl Browser {
         b.start_shield();
         b.start_timers();
         b.watch_edge();
+        {
+            let weak = b.weak();
+            b.panes.bind(move |id| {
+                if let Some(b) = weak.upgrade() {
+                    b.focus_pane(id);
+                }
+            });
+            let weak = b.weak();
+            b.page.connect_notify_local(Some("width"), move |_, _| {
+                if let Some(b) = weak.upgrade()
+                    && b.split.borrow().is_some()
+                    && !b.splitting.get()
+                {
+                    b.apply_split(false);
+                }
+            });
+        }
         b.restore();
         let weak = b.weak();
         b.window.connect_close_request(move |_| {
@@ -445,8 +493,15 @@ impl Browser {
         }
     }
 
-    fn show_stage(&self) {
+    fn show_stage(self: &Rc<Self>) {
         let Some(tab) = self.active() else { return };
+        if self.split.borrow().is_some() {
+            self.apply_split(true);
+            self.trouble.show(false);
+            return;
+        }
+        self.stage.set_visible(true);
+        self.panes.hide();
         let name = if tab.view.borrow().is_some() { tab.id.to_string() } else { "blank".into() };
         self.stage.set_visible_child_name(&name);
         let failure = tab.failure.borrow().clone();
@@ -536,6 +591,9 @@ impl Browser {
             self.toggle_hiding();
         }
         self.ui().bars.close_find(self);
+        if self.split.borrow().as_ref().is_some_and(|split| !split.contains(tab.id)) {
+            self.clear_split();
+        }
         self.active.set(Some(tab.id));
         tab.touch();
         self.wake(tab);
@@ -664,12 +722,14 @@ impl Browser {
                 self.window.close();
                 return;
             }
+            self.forget_tab(tab.id);
             self.sleep(tab);
             self.tabs.borrow_mut().clear();
             self.active.set(None);
             self.new_tab();
             return;
         }
+        self.forget_tab(tab.id);
         self.sleep(tab);
         self.tabs.borrow_mut().remove(index);
         if tab.shy && !self.tabs.borrow().iter().any(|t| t.shy) {
@@ -724,6 +784,7 @@ impl Browser {
         }
         *tab.pin.borrow_mut() = Some(tab.monogram());
         *tab.home.borrow_mut() = tab.url.borrow().clone();
+        layout::leave_group(&mut self.groups.borrow_mut(), tab.id);
         let pins = self.tabs.borrow().iter().filter(|t| t.pin.borrow().is_some() && t.id != tab.id).count();
         self.move_tab(tab, pins);
     }
@@ -1029,10 +1090,162 @@ impl Browser {
         });
     }
 
+    /// Ctrl+Shift+G. The active page joins the latest group, or opens one.
+    pub fn gather_active(self: &Rc<Self>) {
+        let Some(tab) = self.active() else { return };
+        if tab.is_blank() || tab.shy || tab.pin.borrow().is_some() {
+            return;
+        }
+        let mut next = self.next_group.get();
+        layout::join_group(&mut self.groups.borrow_mut(), &mut next, tab.id);
+        self.next_group.set(next);
+        self.refresh_tabs();
+        self.save_soon();
+    }
+
+    pub fn toggle_group(self: &Rc<Self>, id: u64) {
+        if let Some(group) = self.groups.borrow_mut().iter_mut().find(|group| group.id == id) {
+            group.collapsed = !group.collapsed;
+        }
+        self.refresh_tabs();
+        self.save_soon();
+    }
+
+    /// The pane that was clicked is the one the address field follows.
+    pub fn focus_pane(self: &Rc<Self>, id: u64) {
+        if !self.split.borrow().as_ref().is_some_and(|split| split.contains(id)) || self.active.get() == Some(id) {
+            return;
+        }
+        let Some(tab) = self.tab(id) else { return };
+        self.active.set(Some(id));
+        self.window.set_title(Some(&tab.label()));
+        self.ui().field.follow(&tab);
+        self.panes.choose(Some(id));
+        self.refresh_tabs();
+        self.save_soon();
+    }
+
+    pub fn split_drop(self: &Rc<Self>, incoming: &Rc<Tab>, side: Side) {
+        let Some(active) = self.active() else { return };
+        if incoming.id == active.id || incoming.is_blank() || incoming.shy {
+            return;
+        }
+        self.wake(&active);
+        self.wake(incoming);
+        let next = layout::drop_split(self.split.borrow().as_ref(), active.id, incoming.id, side);
+        *self.split.borrow_mut() = next;
+        self.apply_split(true);
+        self.save_soon();
+    }
+
+    fn forget_tab(self: &Rc<Self>, id: u64) {
+        layout::leave_group(&mut self.groups.borrow_mut(), id);
+        if !self.split.borrow().as_ref().is_some_and(|split| split.contains(id)) {
+            return;
+        }
+        let next = self.split.borrow().as_ref().and_then(|split| layout::without(split, id));
+        if let Some(next) = next {
+            *self.split.borrow_mut() = Some(next);
+            self.apply_split(true);
+        } else {
+            self.clear_split();
+        }
+    }
+
+    fn clear_split(&self) {
+        if self.split.borrow().is_none() {
+            return;
+        }
+        *self.split.borrow_mut() = None;
+        for view in self.panes.detach_all() {
+            let id = self
+                .tabs
+                .borrow()
+                .iter()
+                .find_map(|tab| tab.view.borrow().as_ref().is_some_and(|held| held == &view).then_some(tab.id));
+            if view.parent().is_none()
+                && let Some(id) = id
+            {
+                self.stage.add_named(&view, Some(&id.to_string()));
+            }
+        }
+        self.stage.set_visible(true);
+    }
+
+    fn page_span(&self) -> (f64, f64) {
+        let width = self.page.width();
+        let height = self.page.height();
+        if width > 80 && height > 80 {
+            return (width as f64, height as f64);
+        }
+        let prefs = self.prefs.borrow();
+        let side = if prefs.sidebar { prefs.side_width } else { 0.0 };
+        ((self.window.width() as f64 - side).max(200.0), (self.window.height() as f64).max(200.0))
+    }
+
+    fn apply_split(self: &Rc<Self>, animate: bool) {
+        if self.splitting.replace(true) {
+            return;
+        }
+        let done = |this: &Self| this.splitting.set(false);
+        let Some(split) = self.split.borrow().clone() else {
+            done(self);
+            return;
+        };
+        let (width, height) = self.page_span();
+        let rects = layout::place_split(&split, width, height, 8.0);
+        if !animate && self.panes.matches(&rects) {
+            done(self);
+            return;
+        }
+        let mut starts = std::collections::HashMap::new();
+        for (id, rect) in &rects {
+            if self.panes.has(*id) {
+                continue;
+            }
+            let here = self.active.get() == Some(*id);
+            let start = if here {
+                layout::Rect { x: 0.0, y: 0.0, w: width, h: height }
+            } else if rect.x < width / 2.0 {
+                layout::Rect { x: 0.0, y: rect.y, w: 36.0, h: rect.h }
+            } else {
+                layout::Rect { x: width - 36.0, y: rect.y, w: 36.0, h: rect.h }
+            };
+            starts.insert(*id, start);
+        }
+        for id in split.ids() {
+            if let Some(tab) = self.tab(id) {
+                self.wake(&tab);
+            }
+        }
+        self.stage.set_visible(false);
+        self.panes.show(&rects, &starts, animate, |id| self.tab(id).and_then(|tab| tab.view.borrow().clone()));
+        self.panes.choose(self.active.get());
+        done(self);
+    }
+
     fn save_now(&self) {
         let tabs = self.tabs.borrow();
         let kept: Vec<&Rc<Tab>> = tabs.iter().filter(|t| !t.shy && !t.is_blank()).collect();
         let active = kept.iter().position(|t| Some(t.id) == self.active.get()).unwrap_or(0);
+        let index_of = |id: u64| kept.iter().position(|tab| tab.id == id);
+        let groups = self
+            .groups
+            .borrow()
+            .iter()
+            .filter_map(|group| {
+                let members: Vec<usize> = group.members.iter().filter_map(|id| index_of(*id)).collect();
+                (!members.is_empty()).then_some(SavedGroup { members, collapsed: group.collapsed })
+            })
+            .collect();
+        let split = self.split.borrow().as_ref().and_then(|split| match split {
+            Split::Pair { left, right } => Some(SavedSplit::Pair { left: index_of(*left)?, right: index_of(*right)? }),
+            Split::Grid { large, stacked, stack_left } => Some(SavedSplit::Grid {
+                large: index_of(*large)?,
+                stacked: [index_of(stacked[0])?, index_of(stacked[1])?],
+                stack_left: *stack_left,
+            }),
+        });
         let saved = Saved {
             tabs: kept
                 .iter()
@@ -1045,6 +1258,8 @@ impl Browser {
                 })
                 .collect(),
             active,
+            groups,
+            split,
         };
         let _ = store::save(&store::data_dir().join("session.json"), &saved);
     }
@@ -1053,18 +1268,49 @@ impl Browser {
         let saved: Saved = store::load(&store::data_dir().join("session.json"));
         let fresh = self.prefs.borrow().starts_fresh;
         let mut active = None;
+        let mut ids = vec![];
         for (i, s) in saved.tabs.iter().enumerate() {
             if fresh && s.pin.is_none() {
+                ids.push(None);
                 continue;
             }
             let tab = self.make(Some(s.url.clone()), &s.title, false);
             *tab.pin.borrow_mut() = s.pin.clone();
             *tab.home.borrow_mut() = s.home.clone();
             *tab.name.borrow_mut() = s.name.clone();
+            ids.push(Some(tab.id));
             if i == saved.active {
                 active = Some(tab.clone());
             }
             self.tabs.borrow_mut().push(tab);
+        }
+        let id_at = |index: usize| ids.get(index).copied().flatten();
+        if !fresh {
+            for saved_group in &saved.groups {
+                let members: Vec<u64> = saved_group.members.iter().filter_map(|index| id_at(*index)).collect();
+                if members.is_empty() {
+                    continue;
+                }
+                let id = self.next_group.get();
+                self.next_group.set(id + 1);
+                self.groups.borrow_mut().push(Group { id, members, collapsed: saved_group.collapsed });
+            }
+            let restored = match &saved.split {
+                Some(SavedSplit::Pair { left, right }) => match (id_at(*left), id_at(*right)) {
+                    (Some(left), Some(right)) => Some(Split::Pair { left, right }),
+                    _ => None,
+                },
+                Some(SavedSplit::Grid { large, stacked, stack_left }) => {
+                    match (id_at(*large), id_at(stacked[0]), id_at(stacked[1])) {
+                        (Some(large), Some(top), Some(bottom)) => {
+                            Some(Split::Grid { large, stacked: [top, bottom], stack_left: *stack_left })
+                        }
+                        _ => None,
+                    }
+                }
+                None => None,
+            };
+            self.split.replace(restored);
         }
         self.refresh_tabs();
         match active.or_else(|| self.tabs.borrow().first().cloned()) {
