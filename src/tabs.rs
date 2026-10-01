@@ -93,6 +93,15 @@ impl TabList {
         pill.add_css_class("live-ground");
         pill.set_overflow(gtk::Overflow::Hidden);
         pill.append(&fill);
+        // The selection bar has no text of its own. This name is how a check
+        // measures it, and the letters are not drawn.
+        let here = gtk::Label::new(Some("Current tab"));
+        here.add_css_class("pane-name");
+        here.set_can_target(false);
+        here.set_hexpand(true);
+        here.set_halign(gtk::Align::Fill);
+        here.set_valign(gtk::Align::Fill);
+        pill.append(&here);
         board.put(&pill, 0.0, 0.0);
         pill.set_visible(false);
         let (pill_x, pill_y) = axes(&board, &pill);
@@ -564,6 +573,20 @@ impl TabList {
         (w - 470.0).max(TAB_MIN)
     }
 
+    /// Where the selection bar sits when `id` is inside a collapsed group.
+    /// The member row is hidden, so the bar belongs on the folder.
+    fn folded_home(&self, b: &Browser, id: u64) -> Option<(f64, f64, f64, f64)> {
+        let gid = b
+            .groups
+            .borrow()
+            .iter()
+            .find(|group| group.collapsed && group.members.contains(&id))
+            .map(|group| group.id)?;
+        let row = self.groups.borrow().get(&gid).cloned()?;
+        let width = row.slide.width_request().max(1) as f64;
+        Some((0.0, row.y.target(), width, ROW))
+    }
+
     /// The grey under the tab you are on glides to it.
     fn place_pill(&self, b: &Browser) {
         let active = b.active();
@@ -572,8 +595,12 @@ impl TabList {
             self.pill.set_visible(false);
             return;
         };
-        let (x, y) = (item.x.target(), item.y.target());
-        let (w, h) = (item.width.get(), item.height.get());
+        let (x, y, w, h) = self.folded_home(b, tab.id).unwrap_or((
+            item.x.target(),
+            item.y.target(),
+            item.width.get(),
+            item.height.get(),
+        ));
         let first = !self.pill.is_visible();
         self.pill.set_visible(true);
         let pinned = tab.pin.borrow().is_some();

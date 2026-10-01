@@ -263,6 +263,22 @@ def a_group_folds_to_three_icons(app):
         return icons
 
     wait("three icons and a plus", folded, 4)
+
+    def selection_on_folder():
+        headers = [n for n in app.nodes(name="Expand group") if "button" in (n.get_role_name() or "")]
+        marks = app.nodes(name="Current tab")
+        if not headers or len(marks) != 1:
+            return None
+        _, hy, _, hh = app.box(headers[0])
+        _, y, w, h = app.box(marks[0])
+        # A row-sized bar under the folder is the old selection left behind.
+        if y >= hy + hh - 2 or w < 80 or h < 18:
+            return None
+        if abs(y - hy) > 8 or abs(h - hh) > 8:
+            return None
+        return True
+
+    wait("the selection sits on the folder", selection_on_folder, 4)
     crop(app, "group")
     app.press("expand", name="Expand group")
 
