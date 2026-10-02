@@ -31,7 +31,7 @@ windowcontrols button { min-width: 22px; min-height: 22px; padding: 2px; }
 .tab.compact { padding: 0; }
 .tab.hover:not(.live) { background-color: @hover; color: alpha(@ink, 0.7); }
 .tab.live { color: @ink; }
-.tab.pinned { background-color: alpha(@wash, 0.55); }
+.tab.pinned { padding: 0 10px; background-color: alpha(@wash, 0.55); }
 button.group {
   min-height: 28px; padding: 0; border-radius: 9px;
   background: alpha(@wash, 0.7); box-shadow: none; font-size: 12px; font-weight: normal;

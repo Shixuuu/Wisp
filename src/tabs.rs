@@ -24,6 +24,9 @@ const TAB_WIDTH: f64 = 186.0;
 const TAB_TITLED: f64 = 80.0;
 const TAB_MIN: f64 = 36.0;
 const PIN_WIDTH: f64 = 46.0;
+/// A pin's cell is a little taller than a row so the centered logo has
+/// breathing room inside the rectangle.
+const PIN_HEIGHT: f64 = 32.0;
 
 /// One tab on the board.
 struct Item {
@@ -382,7 +385,7 @@ impl TabList {
         };
         if self.side {
             let room = b.prefs.borrow().side_width - 20.0;
-            let cells = layout::pin_cells(pins.len(), room, PIN_GAP, ROW);
+            let cells = layout::pin_cells(pins.len(), room, PIN_GAP, PIN_HEIGHT);
             for (tab, cell) in pins.iter().zip(&cells) {
                 place(tab, cell.x, cell.y, cell.w, cell.h);
             }
@@ -954,9 +957,14 @@ impl TabList {
         } else {
             "audio-volume-high-symbolic"
         });
-        // A square pin tile would otherwise stretch the logo to the tile's height.
+        // A pin centers its logo in the rectangle. The spinner takes the
+        // free room only when there is no logo yet, so it is centered too;
+        // beside a logo it follows the icon out to the far edge.
+        item.icon.set_hexpand(pinned);
         item.icon.set_halign(gtk::Align::Center);
         item.icon.set_valign(gtk::Align::Center);
+        item.spinner.set_hexpand(pinned && !show_icon);
+        item.spinner.set_halign(if pinned { gtk::Align::Center } else { gtk::Align::Fill });
         if pinned {
             // The body fills the cell so the pin's highlight is the whole
             // rectangle. The icon stays centered inside it.

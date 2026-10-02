@@ -200,22 +200,22 @@ mod tests {
 
     #[test]
     fn four_pins_form_two_rows_of_two() {
-        let cells = pin_cells(4, 200.0, 4.0, 28.0);
+        let cells = pin_cells(4, 200.0, 4.0, 32.0);
         println!("{cells:?}");
         assert_eq!(cells.len(), 4);
-        assert_eq!(cells[0], Rect { x: 0.0, y: 0.0, w: 98.0, h: 28.0 });
-        assert_eq!(cells[1], Rect { x: 102.0, y: 0.0, w: 98.0, h: 28.0 });
-        assert_eq!(cells[2], Rect { x: 0.0, y: 32.0, w: 98.0, h: 28.0 });
-        assert_eq!(cells[3], Rect { x: 102.0, y: 32.0, w: 98.0, h: 28.0 });
+        assert_eq!(cells[0], Rect { x: 0.0, y: 0.0, w: 98.0, h: 32.0 });
+        assert_eq!(cells[1], Rect { x: 102.0, y: 0.0, w: 98.0, h: 32.0 });
+        assert_eq!(cells[2], Rect { x: 0.0, y: 36.0, w: 98.0, h: 32.0 });
+        assert_eq!(cells[3], Rect { x: 102.0, y: 36.0, w: 98.0, h: 32.0 });
         // A grid of horizontal rectangles: two columns, wider than tall.
         for cell in &cells {
             assert!(cell.w > cell.h);
             assert!(cell.x == 0.0 || cell.x >= cells[0].w + 4.0);
         }
         assert!(cells[2].y > cells[0].y + cells[0].h);
-        assert_eq!(pin_cells(5, 200.0, 4.0, 28.0).len(), 5);
-        assert_eq!(pin_cells(5, 200.0, 4.0, 28.0)[4].y, 64.0);
-        assert!(pin_cells(0, 200.0, 4.0, 28.0).is_empty());
+        assert_eq!(pin_cells(5, 200.0, 4.0, 32.0).len(), 5);
+        assert_eq!(pin_cells(5, 200.0, 4.0, 32.0)[4].y, 72.0);
+        assert!(pin_cells(0, 200.0, 4.0, 32.0).is_empty());
     }
 
     #[test]
