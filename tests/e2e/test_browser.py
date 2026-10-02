@@ -191,42 +191,49 @@ def pinning_a_tab(app):
     check("a pin draws no title", not app.has(role="label", name="Daily News"))
 
 
-def pin_column(app):
-    """Four loaded pins stacked in one column, then one ordinary row.
+def pin_grid(app):
+    """Four loaded pins in two rows of two, then one ordinary row.
 
-    Returns the icon boxes. Every pin is a horizontal rectangle, so all four
-    icons share one x and each row sits below the last.
+    Returns the icon boxes. Each pin is a horizontal rectangle, so the two
+    icons of a row sit side by side and the second row sits below them.
     """
 
     def ready():
         icons = app.nodes(role="image", name="Site icon")
         if len(icons) != 4:
             return None
-        boxes = sorted((app.box(n) for n in icons), key=lambda b: b[1])
-        for above, below in zip(boxes, boxes[1:]):
-            if below[1] < above[1] + above[3]:
-                return None
-            if abs(below[0] - above[0]) > 2:
+        boxes = sorted((app.box(n) for n in icons), key=lambda b: (b[1], b[0]))
+        top = [b for b in boxes if abs(b[1] - boxes[0][1]) <= 12]
+        floor = boxes[0][1] + max(boxes[0][3] * 0.6, 16)
+        bottom = [b for b in boxes if b[1] >= floor]
+        if len(top) != 2 or len(bottom) != 2:
+            return None
+        if min(b[1] for b in bottom) < max(b[1] + b[3] for b in top) - 4:
+            return None
+        for row in (top, bottom):
+            row = sorted(row, key=lambda b: b[0])
+            if row[1][0] < row[0][0] + row[0][2] + 2:
                 return None
         loose = app.nodes(role="label", name="New Tab")
         if not loose:
             return None
-        if app.box(loose[0])[1] < boxes[-1][1] + boxes[-1][3] + 6:
+        pin_bottom = max(b[1] + b[3] for b in boxes)
+        if app.box(loose[0])[1] < pin_bottom + 6:
             return None
         return boxes
 
-    return wait("a column of pins", ready, 4)
+    return wait("a 2 by 2 pin grid", ready, 4)
 
 
 @test
-def four_pins_form_one_column(app):
+def four_pins_sit_in_two_rows(app):
     for i, (url, host, title, letter) in enumerate(PAGES):
         if i:
             app.key("ctrl+t")
         load(app, url, host)
         app.key("ctrl+shift+p")
     app.key("ctrl+t")
-    boxes = pin_column(app)
+    boxes = pin_grid(app)
     print(f"    pins {boxes}", flush=True)
     for _, _, title, letter in PAGES:
         check(f"no pin letter {letter}", not app.has(role="label", name=letter))
