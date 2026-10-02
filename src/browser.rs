@@ -1489,7 +1489,6 @@ impl Browser {
                     .filter(|t| {
                         !b.is_active(t)
                             && t.view.borrow().is_some()
-                            && t.pin.borrow().is_none()
                             && !t.noisy.get()
                             && !b.split.borrow().as_ref().is_some_and(|split| split.contains(t.id))
                             && t.touched.get().elapsed() > Duration::from_secs(30 * 60)
