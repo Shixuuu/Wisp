@@ -354,7 +354,7 @@ class App:
             if current.strip():
                 self._home_ws = json.loads(current).get("id")
         pid = self.proc.pid
-        hypr("dispatch", f'hl.dsp.window.focus({{ window = "pid:{pid}" }})')
+        hypr("dispatch", f'hl.dsp.focus({{ window = "pid:{pid}" }})')
         time.sleep(0.2)
         if self._active_pid() != pid:
             hypr("dispatch", f'hl.dsp.window.move({{ window = "pid:{pid}", workspace = "9", follow = true }})')

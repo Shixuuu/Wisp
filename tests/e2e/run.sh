@@ -9,6 +9,7 @@
 # ImageMagick's `import` for screenshots of failures.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
+export WISP_HYPR_BUS="${WISP_HYPR_BUS:-${DBUS_SESSION_BUS_ADDRESS:-}}"
 cargo build --locked --quiet
 PYTHON="${PYTHON:-python3}"
 if [ -z "${DISPLAY:-}" ]; then

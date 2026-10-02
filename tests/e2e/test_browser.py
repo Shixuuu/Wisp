@@ -200,7 +200,10 @@ def pinned_ctrl_w_does_not_reopen_the_pin(app):
     wait("the blank fallback tab", lambda: app.title() == "New Tab")
     pin = app.see("the pinned site icon", role="image", name="Site icon")
     x, y, width, height = app.box(pin)
-    app.pointer_click(x + width // 2, y + height // 2)
+    for _ in range(3):
+        app.pointer_click(x + 2 * width, y + height // 2)
+        if app.title() == "Daily News":
+            break
     wait("the pinned page", lambda: app.title() == "Daily News")
     app.key("ctrl+w")
     wait("the blank fallback after closing the pin", lambda: app.title() == "New Tab")
