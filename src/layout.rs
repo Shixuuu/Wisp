@@ -43,20 +43,10 @@ impl Split {
     }
 }
 
-/// At most two columns. Every cell is the size of one half of the row, so
-/// four pins are a 2×2 grid and a single pin does not stretch across.
-pub fn pin_cells(count: usize, room: f64, gap: f64) -> Vec<Rect> {
-    if count == 0 {
-        return vec![];
-    }
-    let cell = ((room - gap) / 2.0).max(20.0);
-    (0..count)
-        .map(|i| {
-            let col = (i % 2) as f64;
-            let row = (i / 2) as f64;
-            Rect { x: col * (cell + gap), y: row * (cell + gap), w: cell, h: cell }
-        })
-        .collect()
+/// One pin per row, each the full width of the column: a horizontal
+/// rectangle rather than a square.
+pub fn pin_cells(count: usize, room: f64, gap: f64, height: f64) -> Vec<Rect> {
+    (0..count).map(|i| Rect { x: 0.0, y: i as f64 * (height + gap), w: room, h: height }).collect()
 }
 
 /// How many member icons a collapsed group shows, and whether a "+" follows.
@@ -202,17 +192,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn four_pins_form_two_rows_of_two() {
-        let cells = pin_cells(4, 200.0, 4.0);
+    fn four_pins_form_four_rows() {
+        let cells = pin_cells(4, 200.0, 4.0, 28.0);
         println!("{cells:?}");
         assert_eq!(cells.len(), 4);
-        assert_eq!(cells[0], Rect { x: 0.0, y: 0.0, w: 98.0, h: 98.0 });
-        assert_eq!(cells[1], Rect { x: 102.0, y: 0.0, w: 98.0, h: 98.0 });
-        assert_eq!(cells[2], Rect { x: 0.0, y: 102.0, w: 98.0, h: 98.0 });
-        assert_eq!(cells[3], Rect { x: 102.0, y: 102.0, w: 98.0, h: 98.0 });
-        assert!(cells[2].y > cells[0].y + cells[0].h);
-        assert_eq!(pin_cells(5, 200.0, 4.0).len(), 5);
-        assert_eq!(pin_cells(5, 200.0, 4.0)[4].y, 204.0);
+        assert_eq!(cells[0], Rect { x: 0.0, y: 0.0, w: 200.0, h: 28.0 });
+        assert_eq!(cells[1], Rect { x: 0.0, y: 32.0, w: 200.0, h: 28.0 });
+        assert_eq!(cells[3], Rect { x: 0.0, y: 96.0, w: 200.0, h: 28.0 });
+        // Every pin is wider than it is tall, and none overlap.
+        for (above, below) in cells.iter().zip(cells.iter().skip(1)) {
+            assert!(above.w > above.h);
+            assert!(below.y >= above.y + above.h);
+        }
+        assert_eq!(pin_cells(5, 200.0, 4.0, 28.0).len(), 5);
+        assert_eq!(pin_cells(5, 200.0, 4.0, 28.0)[4].y, 128.0);
+        assert!(pin_cells(0, 200.0, 4.0, 28.0).is_empty());
     }
 
     #[test]

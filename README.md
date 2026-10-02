@@ -64,7 +64,7 @@ Everything here is checked by the end-to-end tests (see below).
   folds the column away; touch the window's edge and it peeks back. Drag to
   reorder, drag the edge to resize. Click the tab you're on to type over its
   address. Right-click for pin, rename, duplicate, copy, mute, sleep, close.
-- **Pins.** A pinned tab becomes a square with its letter or icon, keeps its
+- **Pins.** A pinned tab becomes a horizontal rectangle with its icon, keeps its
   home page, and comes back every launch.
 - **`Ctrl+Tab` switcher.** Tap it to go back to the last tab; hold it for
   pictures of your recent tabs.

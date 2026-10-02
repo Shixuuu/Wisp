@@ -23,7 +23,7 @@ const PIN_GAP: f64 = 4.0;
 const TAB_WIDTH: f64 = 186.0;
 const TAB_TITLED: f64 = 80.0;
 const TAB_MIN: f64 = 36.0;
-const PIN_WIDTH: f64 = 30.0;
+const PIN_WIDTH: f64 = 46.0;
 
 /// One tab on the board.
 struct Item {
@@ -382,7 +382,7 @@ impl TabList {
         };
         if self.side {
             let room = b.prefs.borrow().side_width - 20.0;
-            let cells = layout::pin_cells(pins.len(), room, PIN_GAP);
+            let cells = layout::pin_cells(pins.len(), room, PIN_GAP, ROW);
             for (tab, cell) in pins.iter().zip(&cells) {
                 place(tab, cell.x, cell.y, cell.w, cell.h);
             }
@@ -957,7 +957,12 @@ impl TabList {
         // A square pin tile would otherwise stretch the logo to the tile's height.
         item.icon.set_halign(gtk::Align::Center);
         item.icon.set_valign(gtk::Align::Center);
-        if pinned || narrow {
+        if pinned {
+            // The body fills the cell so the pin's highlight is the whole
+            // rectangle. The icon stays centered inside it.
+            item.body.set_halign(gtk::Align::Fill);
+            item.label.set_hexpand(false);
+        } else if narrow {
             item.body.set_halign(gtk::Align::Center);
             item.label.set_hexpand(false);
         } else {

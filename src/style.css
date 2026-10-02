@@ -28,7 +28,7 @@ windowcontrols button { min-width: 22px; min-height: 22px; padding: 2px; }
   transition: background-color 140ms ease-out, color 140ms ease-out;
 }
 .tab:not(.side) { padding: 0 7px 0 11px; }
-.tab.compact, .tab.pinned { padding: 0; }
+.tab.compact { padding: 0; }
 .tab.hover:not(.live) { background-color: @hover; color: alpha(@ink, 0.7); }
 .tab.live { color: @ink; }
 .tab.pinned { background-color: alpha(@wash, 0.55); }
