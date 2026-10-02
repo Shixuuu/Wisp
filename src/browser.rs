@@ -1157,14 +1157,7 @@ impl Browser {
         download.connect_failed(move |d, err| {
             let Some(b) = weak.upgrade() else { return };
             let cancelled = err.matches(webkit6::DownloadError::CancelledByUser);
-            {
-                let mut fetches = b.fetches.borrow_mut();
-                if cancelled {
-                    fetches.retain(|f| &f.download != d);
-                } else if let Some(f) = fetches.iter_mut().find(|f| &f.download == d) {
-                    f.failed = Some(err.message().to_string());
-                }
-            }
+            b.fetches.borrow_mut().retain(|f| &f.download != d);
             if !cancelled {
                 b.announce(&format!("Download failed — {}", err.message()));
             }
