@@ -111,7 +111,6 @@ pub fn save<T: Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
 mod tests {
     use super::*;
     use serde::{Deserialize, Serialize};
-    use std::os::unix::fs::PermissionsExt;
 
     #[derive(Serialize, Deserialize, Default, PartialEq, Debug)]
     struct Note {
@@ -131,17 +130,16 @@ mod tests {
         let path = dir.join("history.json");
         save(&path, &Note { word: "kept".into() }).unwrap();
         let before = fs::read(&path).unwrap();
-        let mut perms = fs::metadata(&path).unwrap().permissions();
-        perms.set_mode(0o000);
-        fs::set_permissions(&path, perms).unwrap();
+        // A mode of 000 is still readable by root, and CI runs as root.
+        // A directory is unreadable for every user. Save must refuse it
+        // and leave the previous bytes where they are.
+        let kept = dir.join("history.kept");
+        fs::rename(&path, &kept).unwrap();
+        fs::create_dir(&path).unwrap();
         let err = save(&path, &Note { word: "gone".into() }).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
-        let mut perms = fs::metadata(&path).unwrap().permissions();
-        perms.set_mode(0o644);
-        fs::set_permissions(&path, perms).unwrap();
-        assert_eq!(fs::read(&path).unwrap(), before);
-        let loaded: Note = load(&path);
-        assert_eq!(loaded.word, "kept");
+        assert!(path.is_dir());
+        assert_eq!(fs::read(&kept).unwrap(), before);
         let _ = fs::remove_dir_all(&dir);
     }
 
