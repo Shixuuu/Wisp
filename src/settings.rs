@@ -148,7 +148,7 @@ impl Default for Prefs {
             custom_engine: String::new(),
             keywords: arch_keywords(),
             sleeps_tabs: true,
-            lazy_tabs: false,
+            lazy_tabs: true,
             starts_fresh: false,
             shows_reading: true,
             shows_links: true,
