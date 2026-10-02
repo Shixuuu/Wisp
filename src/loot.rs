@@ -33,7 +33,9 @@ impl Loot {
     }
 
     fn save(&self) {
-        let _ = store::save(&file(), &self.kept);
+        if let Err(err) = store::save(&file(), &self.kept) {
+            eprintln!("wisp: couldn't save downloads: {err}");
+        }
     }
 
     pub fn add(&mut self, keep: Keep) {
@@ -54,18 +56,23 @@ impl Loot {
     }
 }
 
-/// `file.tar.gz` → `file (2).tar.gz` until the name is free.
+/// `my.file.v2.zip` → `my.file.v2 (2).zip` until the name is free.
+/// The file is created empty so two downloads cannot take the same name.
 pub fn free_name(dir: &std::path::Path, suggested: &str) -> std::path::PathBuf {
     let clean: String = suggested.chars().map(|c| if c == '/' || c == '\0' { '_' } else { c }).collect();
     let clean = clean.trim_start_matches('.');
     let name = if clean.trim().is_empty() { "download" } else { clean };
-    let first = dir.join(name);
-    if !first.exists() {
-        return first;
-    }
-    let (stem, ext) = match name.find('.') {
-        Some(i) if i > 0 => (&name[..i], &name[i..]),
-        _ => (name, ""),
+    let (stem, ext) = match name.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() && !ext.is_empty() => (stem, format!(".{ext}")),
+        _ => (name, String::new()),
     };
-    (2..10_000).map(|n| dir.join(format!("{stem} ({n}){ext}"))).find(|p| !p.exists()).unwrap_or(first)
+    for n in 0..10_000 {
+        let candidate = if n == 0 { dir.join(name) } else { dir.join(format!("{stem} ({n}){ext}")) };
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&candidate) {
+            Ok(_) => return candidate,
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(_) => return candidate,
+        }
+    }
+    dir.join(name)
 }

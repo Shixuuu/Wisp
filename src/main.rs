@@ -82,18 +82,19 @@ fn main() -> glib::ExitCode {
             }
         };
         let private = line.options_dict().contains("private");
+        let search = browser.prefs.borrow().clone();
         let targets: Vec<String> = line
             .arguments()
             .iter()
             .skip(1)
             .filter_map(|arg| arg.to_str().map(str::to_string))
-            .map(|arg| target_for(line, &arg))
+            .map(|arg| target_for(line, &arg, &search))
             .collect();
-        if private {
+        if private && targets.is_empty() {
             browser.new_shy_tab();
         }
         for target in targets {
-            browser.open_from_outside(&target);
+            browser.open_from_outside(&target, private);
         }
         browser.present();
         glib::ExitCode::SUCCESS
@@ -104,19 +105,10 @@ fn main() -> glib::ExitCode {
 
 /// What a command-line argument means: a web address as typed, a local file,
 /// or else whatever the address field would make of it.
-fn target_for(line: &gio::ApplicationCommandLine, arg: &str) -> String {
-    let lower = arg.to_ascii_lowercase();
-    if lower.contains("://") || lower.starts_with("about:") || lower.starts_with("data:") {
-        return arg.to_string();
-    }
+fn target_for(line: &gio::ApplicationCommandLine, arg: &str, search: &settings::Prefs) -> String {
     let file = line.create_file_for_arg(arg);
-    if file.query_exists(None::<&gio::Cancellable>) {
-        return file.uri().to_string();
-    }
-    match address::url_from(arg) {
-        Some(url) => url.to_string(),
-        None => settings::Prefs::load().search_url(arg),
-    }
+    let exists = file.query_exists(None::<&gio::Cancellable>);
+    address::cli_target(arg, exists, &file.uri(), |words| search.search_url(words))
 }
 
 /// Search's greys, one pair for a light window and one for a dark. The

@@ -155,7 +155,10 @@ impl Panels {
 
     pub fn show(self: &Rc<Self>, panel: Panel) {
         let Some(b) = self.browser() else { return };
-        self.show_hidden(false);
+        if self.hidden_showing() {
+            self.show_hidden(false);
+        }
+        self.clearing.set(false);
         self.open.set(Some(panel));
         self.refill.take();
         let content = match panel {
@@ -220,8 +223,9 @@ impl Panels {
         let foot_view = foot.clone();
         let weak = b.weak();
         let me = Rc::downgrade(self);
-        let q = query.clone();
+        let query_weak = query.downgrade();
         let fill = move || {
+            let Some(q) = query_weak.upgrade() else { return };
             let (Some(b), Some(me)) = (weak.upgrade(), me.upgrade()) else { return };
             clear(&list);
             clear(&foot);
@@ -240,7 +244,12 @@ impl Panels {
                 return;
             }
             let traces = b.history.borrow().everything(&q.text());
-            count.set_label(&if traces.len() == 1 { "1 page".into() } else { format!("{} pages", traces.len()) });
+            let shown = traces.len().min(500);
+            count.set_label(&if traces.len() <= 500 {
+                if traces.len() == 1 { "1 page".into() } else { format!("{} pages", traces.len()) }
+            } else {
+                format!("{shown} of {} pages", traces.len())
+            });
             foot.append(&count);
             foot.append(&spacer());
             let clear_pill = pill("Clear…", false);
@@ -309,45 +318,14 @@ impl Panels {
     }
 
     fn sweeps(self: &Rc<Self>, b: &Rc<Browser>) -> gtk::Widget {
-        let c = card();
-        let history = pill("Clear", false);
-        let weak = b.weak();
         let me = Rc::downgrade(self);
-        history.connect_clicked(move |_| {
-            if let Some(b) = weak.upgrade() {
-                b.history.borrow_mut().clear();
-                b.history.borrow_mut().save();
-                b.announce("History cleared");
-            }
+        remembered(b, "Everywhere you have been", move || {
             if let Some(me) = me.upgrade() {
                 me.clearing.set(false);
                 me.refill();
             }
-        });
-        c.append(&line("History", Some("Everywhere you have been"), &history));
-        c.append(&rule(14));
-        let cookies = pill("Sign out of everything", false);
-        let weak = b.weak();
-        cookies.connect_clicked(move |_| {
-            if let Some(b) = weak.upgrade() {
-                clear_site_data(&b, webkit6::WebsiteDataTypes::ALL, "Signed out of every site");
-            }
-        });
-        c.append(&line("Cookies and sign-ins", Some("Signs you out of every site"), &cookies));
-        c.append(&rule(14));
-        let cache = pill("Clear", false);
-        let weak = b.weak();
-        cache.connect_clicked(move |_| {
-            if let Some(b) = weak.upgrade() {
-                clear_site_data(
-                    &b,
-                    webkit6::WebsiteDataTypes::DISK_CACHE | webkit6::WebsiteDataTypes::MEMORY_CACHE,
-                    "Cache cleared",
-                );
-            }
-        });
-        c.append(&line("Cache", Some("Only what was fetched to draw pages"), &cache));
-        c.upcast()
+        })
+        .upcast()
     }
 
     // MARK: downloads
@@ -435,8 +413,9 @@ impl Panels {
         let foot = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         let foot_view = foot.clone();
         let weak = b.weak();
-        let q = query.clone();
+        let query_weak = query.downgrade();
         let fill = move || {
+            let Some(q) = query_weak.upgrade() else { return };
             let Some(b) = weak.upgrade() else { return };
             clear(&list);
             clear(&foot);
@@ -459,6 +438,9 @@ impl Panels {
                             Some(host) => format!("{folders}  ·  {host}"),
                             None => folders,
                         };
+                        if node.url.is_none() {
+                            continue;
+                        }
                         let (weak, url) = (b.weak(), node.url.clone());
                         c.append(&trace_row(
                             node.url.as_deref().unwrap_or(""),
@@ -517,6 +499,9 @@ impl Panels {
         let weak = b.weak();
         query.connect_activate(move |q| {
             let Some(b) = weak.upgrade() else { return };
+            if q.text().trim().is_empty() {
+                return;
+            }
             let first = b.bookmarks.borrow().matches(&q.text()).into_iter().find_map(|(n, _)| n.url);
             if let Some(url) = first {
                 b.ui().panels.close();
@@ -738,8 +723,16 @@ impl Panels {
                             ));
                         }
                 });
-                let r = restore.clone();
-                hover.connect_leave(move |_| r.set_opacity(0.0));
+                let (r, weak) = (restore.clone(), b.weak());
+                hover.connect_leave(move |_| {
+                    r.set_opacity(0.0);
+                    if let Some(b) = weak.upgrade()
+                        && let Some(tab) = b.active()
+                    {
+                        b.tune(&tab, &tab.address(), None);
+                        tab.js("document.getElementById('wisp-peek')?.remove()");
+                    }
+                });
                 row.add_controller(hover);
                 let (weak, sel, h) = (b.weak(), v.selector.clone(), host.clone().unwrap_or_default());
                 restore.connect_clicked(move |_| {
@@ -815,9 +808,10 @@ impl Panels {
         let rows: Rc<RefCell<Vec<(Page, gtk::Button)>>> = Rc::default();
         let weak = b.weak();
         let me = Rc::downgrade(self);
-        let (t, p, r) = (title.clone(), pages.clone(), rows.clone());
+        let (t, p) = (title.clone(), pages.clone());
+        let rows_weak = Rc::downgrade(&rows);
         let show: Rc<dyn Fn(Page)> = Rc::new(move |page| {
-            let (Some(b), Some(me)) = (weak.upgrade(), me.upgrade()) else { return };
+            let (Some(b), Some(me), Some(r)) = (weak.upgrade(), me.upgrade(), rows_weak.upgrade()) else { return };
             me.page.set(page);
             t.set_label(page.title());
             clear(&p);
@@ -847,6 +841,10 @@ impl Panels {
             rail.append(&row);
             rows.borrow_mut().push((page, row));
         }
+        let keeper = rows.clone();
+        rail.connect_realize(move |_| {
+            let _ = &keeper;
+        });
         show(self.page.get());
         let me = Rc::downgrade(self);
         let s = show.clone();
@@ -942,9 +940,16 @@ fn general(b: &Rc<Browser>, page: &gtk::Box) {
         custom.connect_changed(move |t| {
             if let Some(b) = weak.upgrade() {
                 b.prefs.borrow_mut().custom_engine = t.text().to_string();
+            }
+        });
+        let weak = b.weak();
+        let focus = gtk::EventControllerFocus::new();
+        focus.connect_leave(move |_| {
+            if let Some(b) = weak.upgrade() {
                 b.prefs.borrow().save();
             }
         });
+        custom.add_controller(focus);
         c.append(&rule(14));
         c.append(&line("Custom search", Some("An address with %s where the words go"), &custom));
     }
@@ -1118,7 +1123,9 @@ const SHORTCUTS: &[(&str, &[(&str, &str)])] = &[
             ("Reload", "Ctrl+R"),
             ("Reload from the server", "Ctrl+Alt+R"),
             ("Reading mode", "Ctrl+Shift+R"),
-            ("Find, next, previous", "Ctrl+F  Ctrl+G  Ctrl+Shift+G"),
+            ("Find, next, previous", "Ctrl+F  Ctrl+G  Shift+Enter"),
+            ("Pin this tab", "Ctrl+Shift+P"),
+            ("Group this tab", "Ctrl+Shift+G"),
             ("Zoom in, out, actual size", "Ctrl++  Ctrl+−  Ctrl+0"),
             ("Copy address", "Ctrl+Shift+C"),
             ("Paste and go", "Ctrl+Shift+V"),
@@ -1163,7 +1170,8 @@ fn downloads(b: &Rc<Browser>, page: &gtk::Box) {
     let c = card();
     let dir = crate::store::downloads_dir();
     let home = std::env::var("HOME").unwrap_or_default();
-    let shown = dir.to_string_lossy().replacen(&home, "~", 1);
+    let raw = dir.to_string_lossy();
+    let shown = if home.is_empty() { raw.into_owned() } else { raw.replacen(&home, "~", 1) };
     let open = pill("Show", false);
     let d = dir.clone();
     open.connect_clicked(move |_| {
@@ -1255,6 +1263,30 @@ fn privacy(b: &Rc<Browser>, page: &gtk::Box) {
 
     let section = gtk::Box::new(gtk::Orientation::Vertical, 6);
     section.append(&caption("What Wisp remembers"));
+    section.append(&remembered(b, "Every address you have been to", || {}));
+    page.append(&section);
+}
+
+fn about(page: &gtk::Box) {
+    let c = card();
+    c.append(&line(
+        &format!("Wisp {}", env!("CARGO_PKG_VERSION")),
+        Some("A small, fast, quiet browser. A Rust rewrite of Search by Office Commun, on the WebKitGTK already on your system."),
+        &gtk::Box::new(gtk::Orientation::Horizontal, 0),
+    ));
+    c.append(&rule(14));
+    c.append(&line(
+        "No account, no sync, no telemetry",
+        Some("History, bookmarks and open tabs are small files in ~/.local/share/wisp. Nothing is sent anywhere."),
+        &gtk::Box::new(gtk::Orientation::Horizontal, 0),
+    ));
+    page.append(&c);
+}
+
+// MARK: pieces
+
+/// History, cookies, and cache. The History panel and Settings share this card.
+fn remembered(b: &Rc<Browser>, history_detail: &'static str, after_history: impl Fn() + 'static) -> gtk::Box {
     let c = card();
     let history = pill("Clear", false);
     let weak = b.weak();
@@ -1264,8 +1296,9 @@ fn privacy(b: &Rc<Browser>, page: &gtk::Box) {
             b.history.borrow_mut().save();
             b.announce("History cleared");
         }
+        after_history();
     });
-    c.append(&line("History", Some("Every address you have been to"), &history));
+    c.append(&line("History", Some(history_detail), &history));
     c.append(&rule(14));
     let cookies = pill("Sign out of everything", false);
     let weak = b.weak();
@@ -1288,27 +1321,8 @@ fn privacy(b: &Rc<Browser>, page: &gtk::Box) {
         }
     });
     c.append(&line("Cache", Some("Only what was fetched to draw pages"), &cache));
-    section.append(&c);
-    page.append(&section);
+    c
 }
-
-fn about(page: &gtk::Box) {
-    let c = card();
-    c.append(&line(
-        &format!("Wisp {}", env!("CARGO_PKG_VERSION")),
-        Some("A small, fast, quiet browser. A Rust rewrite of Search by Office Commun, on the WebKitGTK already on your system."),
-        &gtk::Box::new(gtk::Orientation::Horizontal, 0),
-    ));
-    c.append(&rule(14));
-    c.append(&line(
-        "No account, no sync, no telemetry",
-        Some("History, bookmarks and open tabs are small files in ~/.local/share/wisp. Nothing is sent anywhere."),
-        &gtk::Box::new(gtk::Orientation::Horizontal, 0),
-    ));
-    page.append(&c);
-}
-
-// MARK: pieces
 
 fn clear_site_data(b: &Rc<Browser>, kinds: webkit6::WebsiteDataTypes, said: &'static str) {
     let Some(manager) = b.web.session.website_data_manager() else { return };
@@ -1816,9 +1830,17 @@ fn segmented<T: Copy + PartialEq + 'static>(
     let (l, c) = (layer.clone(), chosen.clone());
     let x = Tween::new(&layer, 0.0, move |v| l.move_(&c, v, 0.0));
     let buttons: Rc<RefCell<Vec<(T, gtk::Button)>>> = Rc::default();
+    let buttons_weak = Rc::downgrade(&buttons);
+    let row_weak = row.downgrade();
+    let chosen_weak = chosen.downgrade();
     let place: Rc<dyn Fn(T, bool)> = {
-        let (buttons, row, chosen, x) = (buttons.clone(), row.clone(), chosen.clone(), x.clone());
+        let x = x.clone();
         Rc::new(move |value, animated| {
+            let (Some(buttons), Some(row), Some(chosen)) =
+                (buttons_weak.upgrade(), row_weak.upgrade(), chosen_weak.upgrade())
+            else {
+                return;
+            };
             for (v, b) in buttons.borrow().iter() {
                 if *v == value {
                     b.add_css_class("on");
@@ -1844,8 +1866,10 @@ fn segmented<T: Copy + PartialEq + 'static>(
         row.append(&b);
         buttons.borrow_mut().push((value, b));
     }
+    let keeper = buttons.clone();
     let p = place.clone();
     row.connect_map(move |_| {
+        let _ = &keeper;
         let p = p.clone();
         glib::idle_add_local_once(move || p(selected, false));
     });
@@ -1869,8 +1893,14 @@ fn steps(stops: &'static [f64], value: f64, home: f64, changed: impl Fn(f64) + '
     let value = Rc::new(Cell::new(value));
     let changed = Rc::new(changed);
     let show: Rc<dyn Fn()> = {
-        let (value, shown, minus, plus) = (value.clone(), shown.clone(), minus.clone(), plus.clone());
+        let value = value.clone();
+        let shown = shown.downgrade();
+        let minus = minus.downgrade();
+        let plus = plus.downgrade();
         Rc::new(move || {
+            let (Some(shown), Some(minus), Some(plus)) = (shown.upgrade(), minus.upgrade(), plus.upgrade()) else {
+                return;
+            };
             let v = value.get();
             shown.set_label(&format!("{}%", (v * 100.0).round()));
             minus.set_sensitive(stops.iter().any(|&s| s < v - 0.001));

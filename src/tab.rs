@@ -4,8 +4,8 @@
 //! address and title and nothing else; its page is built the first time it
 //! is shown. That is why forty tabs cost nothing at launch.
 
+use crate::address;
 use crate::browser::Browser;
-use crate::{address, curtain};
 use gtk::{gdk, gio, glib};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -15,6 +15,10 @@ use webkit6::{
     LoadEvent, NavigationPolicyDecision, NavigationType, PolicyDecisionType, UserContentInjectedFrames,
     UserContentManager, UserScript, UserScriptInjectionTime, UserStyleLevel, UserStyleSheet, WebView,
 };
+
+/// The isolated world the veil and the meter talk in. A page's own scripts
+/// do not see it, and cannot post into it.
+pub const SCRIPT_WORLD: &str = "wisp";
 
 const PICKER: &str = include_str!("js/picker.js");
 const READER: &str = include_str!("js/reader.js");
@@ -61,8 +65,8 @@ pub struct Tab {
     pub preview: RefCell<Option<gdk::Texture>>,
     /// What was typed on a blank tab, kept when you step away from it.
     pub draft: RefCell<String>,
-    pub can_back: Cell<bool>,
-    pub can_forward: Cell<bool>,
+    /// Host, whether the shield is on, and the veil stylesheet last installed.
+    tuned: RefCell<Option<(String, bool, String)>>,
 }
 
 impl Tab {
@@ -89,8 +93,7 @@ impl Tab {
             zoom: Cell::new(1.0),
             preview: RefCell::default(),
             draft: RefCell::default(),
-            can_back: Cell::new(false),
-            can_forward: Cell::new(false),
+            tuned: RefCell::default(),
         }
     }
 
@@ -130,7 +133,7 @@ impl Tab {
     }
 
     pub fn host(&self) -> Option<String> {
-        curtain::host_key(&self.address())
+        address::bare_host(&self.address())
     }
 
     pub fn touch(&self) {
@@ -138,8 +141,12 @@ impl Tab {
     }
 
     pub fn js(&self, script: &str) {
+        self.js_in(script, None);
+    }
+
+    pub fn js_in(&self, script: &str, world: Option<&str>) {
         if let Some(view) = self.view.borrow().as_ref() {
-            view.evaluate_javascript(script, None, None, None::<&gio::Cancellable>, |_| {});
+            view.evaluate_javascript(script, world, None, None::<&gio::Cancellable>, |_| {});
         }
     }
 }
@@ -150,12 +157,19 @@ impl Browser {
     pub fn build(self: &Rc<Self>, tab: &Rc<Tab>, related: Option<&WebView>) -> WebView {
         let content = UserContentManager::new();
         let at_end = |source| {
-            UserScript::new(source, UserContentInjectedFrames::TopFrame, UserScriptInjectionTime::End, &[], &[])
+            UserScript::for_world(
+                source,
+                UserContentInjectedFrames::TopFrame,
+                UserScriptInjectionTime::End,
+                SCRIPT_WORLD,
+                &[],
+                &[],
+            )
         };
         content.add_script(&at_end(PICKER));
         content.add_script(&at_end(METER));
         for name in ["wispVeil", "wispMeter"] {
-            content.register_script_message_handler(name, None);
+            content.register_script_message_handler(name, Some(SCRIPT_WORLD));
             let weak = self.weak();
             let id = tab.id;
             content.connect_script_message_received(Some(name), move |_, value| {
@@ -218,6 +232,8 @@ impl Browser {
         // Released, not closed: closing would run the page's own close,
         // which closes the tab.
         self.stage_remove(&view);
+        self.panes_unwatch(tab.id);
+        tab.tuned.take();
         tab.content.take();
         tab.loading.set(false);
         tab.noisy.set(false);
@@ -229,17 +245,22 @@ impl Browser {
     /// `spared`: one hidden thing shown for a moment (the Hidden panel's peek).
     pub fn tune(&self, tab: &Tab, url: &str, spared: Option<&str>) {
         let Some(content) = tab.content.borrow().clone() else { return };
-        let host = curtain::host_key(url).unwrap_or_default();
-        content.remove_all_filters();
+        let host = address::bare_host(url).unwrap_or_default();
         let blocking = {
             let p = self.prefs.borrow();
             p.shielded && !p.is_paused(&host)
         };
+        let css = self.curtain.borrow().css_without(&host, spared);
+        let key = (host, blocking, css.clone());
+        if tab.tuned.borrow().as_ref() == Some(&key) {
+            return;
+        }
+        *tab.tuned.borrow_mut() = Some(key);
+        content.remove_all_filters();
         if let (true, Some(filter)) = (blocking, self.web.filter.borrow().as_ref()) {
             content.add_filter(filter);
         }
         content.remove_all_style_sheets();
-        let css = self.curtain.borrow().css_without(&host, spared);
         if !css.is_empty() {
             content.add_style_sheet(&UserStyleSheet::new(
                 &css,
@@ -253,6 +274,7 @@ impl Browser {
 
     pub fn retune(&self) {
         for tab in self.tabs.borrow().iter() {
+            tab.tuned.take();
             self.tune(tab, &tab.address(), None);
         }
     }
@@ -326,8 +348,6 @@ impl Browser {
                 }
                 _ => {}
             }
-            tab.can_back.set(v.can_go_back());
-            tab.can_forward.set(v.can_go_forward());
         });
 
         let weak = self.weak();
@@ -481,15 +501,34 @@ impl Browser {
     pub fn capture(&self, tab: &Rc<Tab>) {
         let Some(view) = tab.view.borrow().clone() else { return };
         let tab = Rc::downgrade(tab);
+        let window = self.window.clone();
         view.snapshot(
             webkit6::SnapshotRegion::Visible,
             webkit6::SnapshotOptions::NONE,
             None::<&gio::Cancellable>,
             move |result| {
                 if let (Ok(texture), Some(tab)) = (result, tab.upgrade()) {
-                    *tab.preview.borrow_mut() = Some(texture);
+                    *tab.preview.borrow_mut() = Some(shrink(&window, &texture).unwrap_or(texture));
                 }
             },
         );
     }
+}
+
+/// The switcher shows these a few hundred pixels wide. A snapshot is the size
+/// of the whole page area, several megabytes each, kept for every tab.
+const PREVIEW_WIDTH: f32 = 480.0;
+
+fn shrink(window: &impl IsA<gtk::Widget>, texture: &gdk::Texture) -> Option<gdk::Texture> {
+    let (w, h) = (texture.width() as f32, texture.height() as f32);
+    if w <= PREVIEW_WIDTH {
+        return None;
+    }
+    let scale = PREVIEW_WIDTH / w;
+    let snapshot = gtk::Snapshot::new();
+    snapshot.scale(scale, scale);
+    snapshot.append_texture(texture, &gtk::graphene::Rect::new(0.0, 0.0, w, h));
+    let node = snapshot.to_node()?;
+    let renderer = window.native()?.renderer()?;
+    Some(renderer.render_texture(&node, Some(&gtk::graphene::Rect::new(0.0, 0.0, w * scale, h * scale))))
 }

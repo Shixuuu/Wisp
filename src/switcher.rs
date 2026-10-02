@@ -26,6 +26,7 @@ pub struct Switcher {
     gx: Tween,
     gy: Tween,
     reveal: RefCell<Option<glib::SourceId>>,
+    hide_later: Rc<RefCell<Option<glib::SourceId>>>,
     card: Cell<(f64, f64)>,
 }
 
@@ -62,6 +63,7 @@ impl Switcher {
             gx,
             gy,
             reveal: RefCell::default(),
+            hide_later: Rc::new(RefCell::default()),
             card: Cell::new((176.0, 140.0)),
         });
         let click = gtk::GestureClick::new();
@@ -159,13 +161,23 @@ impl Switcher {
         if let Some(id) = self.reveal.take() {
             id.remove();
         }
+        if let Some(id) = self.hide_later.take() {
+            id.remove();
+        }
         self.candidates.borrow_mut().clear();
         self.panel.show(false);
         let layer = self.layer.clone();
-        glib::timeout_add_local_once(Duration::from_millis(160), move || layer.show(false));
+        let later = Rc::clone(&self.hide_later);
+        *self.hide_later.borrow_mut() = Some(glib::timeout_add_local_once(Duration::from_millis(160), move || {
+            later.take();
+            layer.show(false);
+        }));
     }
 
     fn show(self: &Rc<Self>) {
+        if let Some(id) = self.hide_later.take() {
+            id.remove();
+        }
         if self.panel.shown() {
             return;
         }

@@ -48,7 +48,7 @@ button.group:hover { background-color: @hover; }
 .tab .shy { opacity: 0.7; }
 .tab-edit { font-size: 12.5px; color: @ink; }
 .tab-edit selection { background-color: alpha(@ink, 0.12); color: @ink; }
-.held { box-shadow: 0 3px 10px alpha(black, 0.16); }
+.slide-held, button.held, .tab.held { box-shadow: 0 3px 10px alpha(black, 0.16); }
 
 .mark {
   font-size: 8.5px;
@@ -91,7 +91,7 @@ button.quiet {
 button.quiet:hover { background-color: @hover; color: alpha(@ink, 0.7); }
 
 /* The address field. */
-.dim-page { background-color: alpha(@ground, 0.74); }
+
 .breath { border-radius: 14px; box-shadow: 0 0 26px 1px alpha(@ink, 0.07); }
 .field {
   background-color: alpha(@ground, 0.72);
@@ -195,7 +195,7 @@ button.segment {
   background: none; color: @muted; border-radius: 7px; box-shadow: none;
 }
 button.segment.on { color: @ink; font-weight: 500; }
-.chosen { background-color: @ground; border-radius: 7px; box-shadow: 0 1px 3px alpha(black, 0.08); }
+.segmented .chosen { background-color: @ground; border-radius: 7px; box-shadow: 0 1px 3px alpha(black, 0.08); }
 .steps { border: 1px solid @hairline; border-radius: 999px; padding: 0 2px; min-height: 24px; }
 button.step { min-width: 20px; min-height: 20px; padding: 0; border-radius: 999px; background: none; box-shadow: none; color: @ink; }
 button.step:hover { background-color: @hover; }

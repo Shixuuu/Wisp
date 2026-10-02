@@ -35,7 +35,16 @@ pub struct Bars {
 }
 
 /// What to do with a page's question once it is answered.
-type Answer = Box<dyn Fn(bool)>;
+/// Dismissed means another question replaced this one: the page is refused,
+/// and the refusal is not remembered.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Verdict {
+    Allow,
+    Deny,
+    Dismissed,
+}
+
+type Answer = Box<dyn Fn(Verdict)>;
 
 fn capsule(class: &str) -> gtk::Box {
     let b = gtk::Box::new(gtk::Orientation::Horizontal, 8);
@@ -176,7 +185,7 @@ impl Bars {
                 launcher.open_containing_folder(None::<&gtk::Window>, None::<&gio::Cancellable>, |_| {});
             }
         });
-        for (button, answer) in [(allow, true), (deny, false)] {
+        for (button, answer) in [(allow, Verdict::Allow), (deny, Verdict::Deny)] {
             let me = Rc::downgrade(&bars);
             button.connect_clicked(move |_| {
                 let Some(me) = me.upgrade() else { return };
@@ -269,9 +278,9 @@ impl Bars {
             }));
     }
 
-    pub fn ask(&self, kind: &str, text: &str, answer: impl Fn(bool) + 'static) {
+    pub fn ask(&self, kind: &str, text: &str, answer: impl Fn(Verdict) + 'static) {
         if let Some(earlier) = self.asked.take() {
-            earlier(false);
+            earlier(Verdict::Dismissed);
         }
         self.ask_icon.set_icon_name(Some(match kind {
             "location" => "find-location-symbolic",
@@ -392,7 +401,7 @@ impl Bars {
         finder.search(&text, self.options(), 1000);
     }
 
-    /// Ctrl+G and Ctrl+Shift+G: the next match, or the one before.
+    /// Ctrl+G finds the next match. Shift+Enter finds the one before.
     pub fn look(&self, forward: bool) {
         let Some(finder) = self.controller() else { return };
         if self.needle.text().is_empty() {

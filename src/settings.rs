@@ -19,6 +19,9 @@ pub enum Engine {
     Brave,
     Qwant,
     Custom,
+    /// An engine name this version does not know. Treated as Google.
+    #[serde(other)]
+    Other,
 }
 
 impl Engine {
@@ -45,6 +48,7 @@ impl Engine {
             Engine::Brave => "Brave Search",
             Engine::Qwant => "Qwant",
             Engine::Custom => "Custom",
+            Engine::Other => "Google",
         }
     }
 
@@ -59,6 +63,7 @@ impl Engine {
             Engine::Brave => "https://search.brave.com/search?q=%s",
             Engine::Qwant => "https://www.qwant.com/?q=%s",
             Engine::Custom => "",
+            Engine::Other => Engine::Google.template(),
         }
     }
 }
@@ -70,6 +75,8 @@ pub enum Look {
     Dark,
     #[default]
     System,
+    #[serde(other)]
+    Other,
 }
 
 /// A word typed before a search: "aw pacman" goes straight to the Arch Wiki.
@@ -159,6 +166,10 @@ impl Default for Prefs {
     }
 }
 
+fn clamp_zoom(zoom: f64) -> f64 {
+    if zoom.is_finite() { zoom.clamp(0.3, 5.0) } else { 1.0 }
+}
+
 pub const SIDE: f64 = 232.0;
 pub const SIDE_MIN: f64 = 176.0;
 pub const SIDE_MAX: f64 = 440.0;
@@ -171,6 +182,17 @@ impl Prefs {
     pub fn load() -> Prefs {
         let mut p: Prefs = store::load(&Self::file());
         p.side_width = p.side_width.clamp(SIDE_MIN, SIDE_MAX);
+        p.page_zoom = clamp_zoom(p.page_zoom);
+        p.zooms.retain(|_, zoom| zoom.is_finite());
+        for zoom in p.zooms.values_mut() {
+            *zoom = clamp_zoom(*zoom);
+        }
+        if p.engine == Engine::Other {
+            p.engine = Engine::Google;
+        }
+        if p.look == Look::Other {
+            p.look = Look::System;
+        }
         p
     }
 

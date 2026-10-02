@@ -29,6 +29,35 @@ use webkit6::prelude::*;
 pub const STRIP: f64 = 52.0;
 
 /// A tab that was closed, for Ctrl+Shift+T.
+/// How many closed tabs Ctrl+Shift+T can bring back.
+const MAX_GHOSTS: usize = 25;
+
+/// What closing a tab does to the window and the private session.
+#[derive(Debug, PartialEq, Eq)]
+pub enum CloseOutcome {
+    CloseWindow,
+    Replace { drop_private: bool },
+    Remove { drop_private: bool },
+}
+
+pub fn close_outcome(count: usize, shy: bool, blank: bool, another_private: bool) -> CloseOutcome {
+    if count <= 1 {
+        if blank && !shy { CloseOutcome::CloseWindow } else { CloseOutcome::Replace { drop_private: shy } }
+    } else {
+        CloseOutcome::Remove { drop_private: shy && !another_private }
+    }
+}
+
+/// Where a reopened tab sits: after the pins, never in front of them.
+pub fn reopen_at(index: usize, len: usize, pins: usize) -> usize {
+    index.max(pins).min(len)
+}
+
+/// An outside address reuses the blank tab only when that tab has the same privacy.
+pub fn reuses_blank(active_blank: bool, active_shy: bool, want_shy: bool) -> bool {
+    active_blank && active_shy == want_shy
+}
+
 struct Ghost {
     url: String,
     title: String,
@@ -200,6 +229,17 @@ impl Browser {
             ui: OnceCell::new(),
         });
 
+        let weak = b.weak();
+        b.window.connect_default_width_notify(move |_| {
+            if let Some(b) = weak.upgrade() {
+                b.refresh_tabs();
+            }
+        });
+        let weak = b.weak();
+        b.window.connect_maximized_notify(move |_| {
+            let Some(b) = weak.upgrade() else { return };
+            glib::idle_add_local_once(move || b.refresh_tabs());
+        });
         let _ = b.ui.set(Ui {
             tabs: RefCell::new(None),
             field: Omnibox::new(&b),
@@ -219,6 +259,16 @@ impl Browser {
         b.watch_downloads(&b.web.session.clone());
         b.start_shield();
         b.start_timers();
+        if !crate::web::media_ready() {
+            const MISSING: &str = "Video and sign-in pages will crash: install gst-plugins-good";
+            eprintln!("wisp: {MISSING}");
+            let weak = b.weak();
+            glib::timeout_add_seconds_local_once(1, move || {
+                if let Some(b) = weak.upgrade() {
+                    b.announce(MISSING);
+                }
+            });
+        }
         b.watch_edge();
         {
             let weak = b.weak();
@@ -487,9 +537,15 @@ impl Browser {
         }
     }
 
+    pub(crate) fn panes_unwatch(&self, id: u64) {
+        self.panes.unwatch(id);
+    }
+
     pub fn stage_remove(&self, view: &webkit6::WebView) {
+        // A split pane's body is not the stack. Unparent takes the view down
+        // from whichever of the two is holding it.
         if view.parent().is_some() {
-            self.stage.remove(view);
+            view.unparent();
         }
     }
 
@@ -588,7 +644,11 @@ impl Browser {
             self.ui().switcher.left(&here);
         }
         if self.veiling.get() {
-            self.toggle_hiding();
+            self.veiling.set(false);
+            self.ui().bars.hint(false);
+            if let Some(here) = self.active() {
+                here.js_in("window.__wispVeil && window.__wispVeil.off()", Some(crate::tab::SCRIPT_WORLD));
+            }
         }
         self.ui().bars.close_find(self);
         if self.split.borrow().as_ref().is_some_and(|split| !split.contains(tab.id)) {
@@ -715,33 +775,47 @@ impl Browser {
             return;
         }
         if !tab.is_blank() && !tab.shy {
-            self.ghosts.borrow_mut().push(Ghost { url: tab.address(), title: tab.label(), index });
+            let mut ghosts = self.ghosts.borrow_mut();
+            ghosts.push(Ghost { url: tab.address(), title: tab.label(), index });
+            if ghosts.len() > MAX_GHOSTS {
+                ghosts.remove(0);
+            }
         }
-        if self.tabs.borrow().len() == 1 {
-            if tab.is_blank() {
+        let count = self.tabs.borrow().len();
+        let another_private = self.tabs.borrow().iter().any(|t| t.id != tab.id && t.shy);
+        match close_outcome(count, tab.shy, tab.is_blank(), another_private) {
+            CloseOutcome::CloseWindow => {
                 self.window.close();
                 return;
             }
-            self.forget_tab(tab.id);
-            self.sleep(tab);
-            self.tabs.borrow_mut().clear();
-            self.active.set(None);
-            self.new_tab();
-            return;
-        }
-        self.forget_tab(tab.id);
-        self.sleep(tab);
-        self.tabs.borrow_mut().remove(index);
-        if tab.shy && !self.tabs.borrow().iter().any(|t| t.shy) {
-            self.web.drop_shy_session();
-        }
-        if was_active {
-            self.active.set(None);
-            let next = {
-                let tabs = self.tabs.borrow();
-                tabs[index.min(tabs.len() - 1)].clone()
-            };
-            self.select(&next);
+            CloseOutcome::Replace { drop_private } => {
+                self.forget_tab(tab.id);
+                self.sleep(tab);
+                self.tabs.borrow_mut().clear();
+                self.active.set(None);
+                if drop_private {
+                    self.web.drop_shy_session();
+                }
+                self.veil_off();
+                self.new_tab();
+                return;
+            }
+            CloseOutcome::Remove { drop_private } => {
+                self.forget_tab(tab.id);
+                self.sleep(tab);
+                self.tabs.borrow_mut().remove(index);
+                if drop_private {
+                    self.web.drop_shy_session();
+                }
+                if was_active {
+                    self.veil_off();
+                    let next = {
+                        let tabs = self.tabs.borrow();
+                        tabs[index.min(tabs.len() - 1)].clone()
+                    };
+                    self.select(&next);
+                }
+            }
         }
         self.refresh_tabs();
         self.save_soon();
@@ -762,7 +836,8 @@ impl Browser {
         let tab = self.make(Some(ghost.url.clone()), &ghost.title, false);
         {
             let mut tabs = self.tabs.borrow_mut();
-            let at = ghost.index.min(tabs.len());
+            let pins = tabs.iter().filter(|t| t.pin.borrow().is_some()).count();
+            let at = reopen_at(ghost.index, tabs.len(), pins);
             tabs.insert(at, tab.clone());
         }
         self.select(&tab);
@@ -849,7 +924,7 @@ impl Browser {
 
     pub fn zoom_for(&self, url: &str) -> f64 {
         let p = self.prefs.borrow();
-        crate::curtain::host_key(url).and_then(|h| p.zooms.get(&h).copied()).unwrap_or(p.page_zoom)
+        crate::address::bare_host(url).and_then(|h| p.zooms.get(&h).copied()).unwrap_or(p.page_zoom)
     }
 
     pub fn zoom(&self, factor: Option<f64>) {
@@ -862,7 +937,9 @@ impl Browser {
         if let Some(v) = tab.view.borrow().as_ref() {
             v.set_zoom_level(level);
         }
-        if let Some(host) = tab.host() {
+        if !tab.shy
+            && let Some(host) = tab.host()
+        {
             let mut p = self.prefs.borrow_mut();
             if factor.is_none() {
                 p.zooms.remove(&host);
@@ -876,16 +953,29 @@ impl Browser {
 
     // MARK: hiding things
 
+    fn veil_off(self: &Rc<Self>) {
+        if !self.veiling.replace(false) {
+            return;
+        }
+        self.ui().bars.hint(false);
+        if let Some(tab) = self.active() {
+            tab.js_in("window.__wispVeil && window.__wispVeil.off()", Some(crate::tab::SCRIPT_WORLD));
+        }
+    }
+
     /// Ctrl+Shift+H: pointing mode, where a click takes a thing off the page.
     pub fn toggle_hiding(self: &Rc<Self>) {
         let on = !self.veiling.get();
         let Some(tab) = self.active().filter(|t| t.view.borrow().is_some()) else { return };
         self.veiling.set(on);
-        tab.js(if on {
-            "window.__wispVeil && window.__wispVeil.on()"
-        } else {
-            "window.__wispVeil && window.__wispVeil.off()"
-        });
+        tab.js_in(
+            if on {
+                "window.__wispVeil && window.__wispVeil.on()"
+            } else {
+                "window.__wispVeil && window.__wispVeil.off()"
+            },
+            Some(crate::tab::SCRIPT_WORLD),
+        );
         self.ui().bars.hint(on);
         if let (true, Some(view)) = (on, tab.view.borrow().as_ref()) {
             view.grab_focus();
@@ -902,7 +992,10 @@ impl Browser {
             self.announce(&format!("Couldn't hide that — {trouble}"));
             return;
         }
-        let Some(selector) = msg.get("selector").and_then(|s| s.as_str()) else { return };
+        let Some(selector) = msg.get("selector").and_then(|s| s.as_str()).and_then(crate::curtain::safe_selector)
+        else {
+            return;
+        };
         let label = msg.get("label").and_then(|s| s.as_str()).unwrap_or(selector);
         let note = msg.get("note").and_then(|s| s.as_str()).unwrap_or_default();
         let Some(host) = tab.host() else { return };
@@ -956,8 +1049,8 @@ impl Browser {
         } else {
             return false;
         };
+        let key = crate::address::permission_key(&tab.address(), kind);
         let host = tab.host().unwrap_or_else(|| "This page".into());
-        let key = format!("{host} {kind}");
         if let Some(allowed) = self.prefs.borrow().permissions.get(&key).copied() {
             if allowed {
                 request.allow()
@@ -974,13 +1067,16 @@ impl Browser {
         let weak = self.weak();
         let request = request.clone();
         let remember = !tab.shy;
-        self.ui().bars.ask(kind, &text, move |allowed| {
+        self.ui().bars.ask(kind, &text, move |verdict| {
+            let allowed = verdict == crate::bars::Verdict::Allow;
             if allowed {
                 request.allow()
             } else {
                 request.deny()
             }
-            if let (Some(b), true) = (weak.upgrade(), remember) {
+            if let (Some(b), true, crate::bars::Verdict::Allow | crate::bars::Verdict::Deny) =
+                (weak.upgrade(), remember, verdict)
+            {
                 b.prefs.borrow_mut().permissions.insert(key.clone(), allowed);
                 b.prefs.borrow().save();
             }
@@ -1038,7 +1134,7 @@ impl Browser {
                 let i = fetches.iter().position(|f| &f.download == d);
                 i.filter(|&i| fetches[i].failed.is_none()).map(|i| fetches.remove(i))
             };
-            if let Some(f) = done {
+            if let Some(f) = done.filter(|_| !b.download_is_private(d)) {
                 b.loot.borrow_mut().add(Keep {
                     name: f.name.clone(),
                     from: f.from,
@@ -1261,7 +1357,9 @@ impl Browser {
             groups,
             split,
         };
-        let _ = store::save(&store::data_dir().join("session.json"), &saved);
+        if let Err(err) = store::save(&store::data_dir().join("session.json"), &saved) {
+            eprintln!("wisp: couldn't save the session: {err}");
+        }
     }
 
     fn restore(self: &Rc<Self>) {
@@ -1319,14 +1417,44 @@ impl Browser {
         }
     }
 
-    /// A link from another program: into an empty tab on screen, or a new one.
-    pub fn open_from_outside(self: &Rc<Self>, uri: &str) {
-        if self.active().is_some_and(|t| t.is_blank() && !t.shy) {
+    /// A link from another program: into an empty tab of the same privacy, or a new one.
+    pub fn open_from_outside(self: &Rc<Self>, uri: &str, shy: bool) {
+        let reuse = self.active().is_some_and(|t| reuses_blank(t.is_blank(), t.shy, shy));
+        if reuse {
             self.go(uri);
+        } else if shy {
+            let tab = self.insert(Some(uri.to_string()), "", true, None);
+            let view = self.build(&tab, None);
+            view.load_uri(uri);
+            self.stage_add(&tab);
+            self.select(&tab);
         } else {
             self.open(uri, true, None);
         }
         self.window.present();
+    }
+
+    fn download_is_private(&self, download: &webkit6::Download) -> bool {
+        let Some(view) = download.web_view() else { return false };
+        self.tabs.borrow().iter().any(|tab| tab.shy && tab.view.borrow().as_ref().is_some_and(|held| held == &view))
+    }
+
+    /// Reorder inside a group. False when the two tabs are not in the same one.
+    pub fn reorder_group_member(self: &Rc<Self>, id: u64, onto: u64) -> bool {
+        let changed = {
+            let mut groups = self.groups.borrow_mut();
+            let Some(group) =
+                groups.iter_mut().find(|group| group.members.contains(&id) && group.members.contains(&onto))
+            else {
+                return false;
+            };
+            layout::reorder_member(&mut group.members, id, onto)
+        };
+        if changed {
+            self.refresh_tabs();
+            self.save_soon();
+        }
+        changed
     }
 
     fn start_shield(self: &Rc<Self>) {
@@ -1355,6 +1483,7 @@ impl Browser {
                             && t.view.borrow().is_some()
                             && t.pin.borrow().is_none()
                             && !t.noisy.get()
+                            && !b.split.borrow().as_ref().is_some_and(|split| split.contains(t.id))
                             && t.touched.get().elapsed() > Duration::from_secs(30 * 60)
                     })
                     .cloned()
@@ -1377,7 +1506,7 @@ impl Browser {
 
 pub fn apply_look(look: Look) {
     adw::StyleManager::default().set_color_scheme(match look {
-        Look::System => adw::ColorScheme::Default,
+        Look::System | Look::Other => adw::ColorScheme::Default,
         Look::Light => adw::ColorScheme::ForceLight,
         Look::Dark => adw::ColorScheme::ForceDark,
     });
@@ -1404,4 +1533,23 @@ fn trouble_page() -> (gtk::Box, gtk::Label, gtk::Button) {
     page.append(&inner);
     page.set_vexpand(true);
     (page, text, retry)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_last_private_tab_drops_the_session() {
+        assert_eq!(close_outcome(1, false, true, false), CloseOutcome::CloseWindow);
+        assert_eq!(close_outcome(1, true, true, false), CloseOutcome::Replace { drop_private: true });
+        assert_eq!(close_outcome(2, true, false, false), CloseOutcome::Remove { drop_private: true });
+        assert_eq!(close_outcome(2, true, false, true), CloseOutcome::Remove { drop_private: false });
+        assert_eq!(close_outcome(2, false, false, false), CloseOutcome::Remove { drop_private: false });
+        assert!(reuses_blank(true, true, true));
+        assert!(!reuses_blank(true, false, true));
+        assert!(!reuses_blank(false, true, true));
+        assert_eq!(reopen_at(0, 4, 2), 2);
+        assert_eq!(reopen_at(3, 4, 2), 3);
+    }
 }

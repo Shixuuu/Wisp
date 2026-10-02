@@ -14,7 +14,7 @@
 
   function best() {
     var candidates = document.querySelectorAll(
-      'article, main, [role="main"], .post, .entry, .article, .content, #content, div, section'
+      'article, main, [role="main"], .post, .entry, .article, .content, #content'
     );
     var top = null, mark = 0;
     for (var i = 0; i < candidates.length; i++) {
@@ -131,6 +131,8 @@
   from.textContent = location.host.replace(/^www\./, '');
 
   document.body.innerHTML = '';
+  var scripts = document.querySelectorAll('script');
+  for (var s = 0; s < scripts.length; s++) scripts[s].remove();
   document.head.appendChild(sheet);
   wrap.insertBefore(from, wrap.firstChild);
   wrap.insertBefore(top, wrap.firstChild);

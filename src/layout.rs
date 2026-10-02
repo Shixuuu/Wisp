@@ -152,6 +152,51 @@ pub fn place_split(split: &Split, width: f64, height: f64, gap: f64) -> Vec<(u64
     }
 }
 
+/// The half of the page a dragged tab is over, once the pointer has left the sidebar.
+/// In the top strip the pointer is reordering, not splitting.
+#[allow(clippy::too_many_arguments)]
+pub fn drop_side_at(
+    sidebar: bool,
+    side_right: bool,
+    side_width: f64,
+    window_w: f64,
+    window_h: f64,
+    strip: f64,
+    x: f64,
+    y: f64,
+) -> Option<Side> {
+    if y < 0.0 || y > window_h {
+        return None;
+    }
+    if !sidebar && y < strip {
+        return None;
+    }
+    let (left, right) = if !sidebar {
+        (0.0, window_w)
+    } else if side_right {
+        (0.0, (window_w - side_width).max(0.0))
+    } else {
+        (side_width, window_w)
+    };
+    if x < left + 12.0 || x > right {
+        return None;
+    }
+    Some(if x < (left + right) / 2.0 { Side::Left } else { Side::Right })
+}
+
+/// Move `id` to where `onto` sits inside one group.
+pub fn reorder_member(members: &mut Vec<u64>, id: u64, onto: u64) -> bool {
+    let Some(from) = members.iter().position(|member| *member == id) else { return false };
+    let Some(to) = members.iter().position(|member| *member == onto) else { return false };
+    if from == to {
+        return false;
+    }
+    let member = members.remove(from);
+    let to = if from < to { to - 1 } else { to };
+    members.insert(to, member);
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -202,5 +247,16 @@ mod tests {
         assert!(rects[0].1.w > rects[1].1.h);
         assert_eq!(without(&grid, 3).unwrap(), Split::Pair { left: 2, right: 1 });
         assert_eq!(without(&pair, 2), None);
+    }
+
+    #[test]
+    fn a_strip_drag_is_not_a_split() {
+        assert_eq!(drop_side_at(false, false, 232.0, 1000.0, 800.0, 52.0, 400.0, 20.0), None);
+        assert_eq!(drop_side_at(false, false, 232.0, 1000.0, 800.0, 52.0, 800.0, 400.0), Some(Side::Right));
+        assert_eq!(drop_side_at(true, false, 232.0, 1000.0, 800.0, 52.0, 100.0, 40.0), None);
+        assert_eq!(drop_side_at(true, false, 232.0, 1000.0, 800.0, 52.0, 600.0, 400.0), Some(Side::Left));
+        let mut members = vec![1, 2, 3];
+        assert!(reorder_member(&mut members, 3, 1));
+        assert_eq!(members, vec![3, 1, 2]);
     }
 }

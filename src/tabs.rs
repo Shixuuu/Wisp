@@ -6,7 +6,7 @@
 //! serve both ways of showing tabs, laid out the other way.
 
 use crate::browser::{Browser, STRIP};
-use crate::layout::{self, Side};
+use crate::layout::{self, Group, Side};
 use crate::motion::{Curve, Slide, Tween};
 use crate::tab::{Change, Tab};
 use adw::prelude::*;
@@ -43,6 +43,7 @@ struct Item {
     hovering: Cell<bool>,
     held: Cell<bool>,
     pinned: Cell<bool>,
+    letter_changed: RefCell<Option<glib::SignalHandlerId>>,
 }
 
 struct GroupRow {
@@ -76,7 +77,6 @@ pub struct TabList {
     kept: gtk::Button,
     editing: Cell<Option<u64>>,
     renaming: Cell<bool>,
-    lettering: Cell<Option<u64>>,
 }
 
 impl TabList {
@@ -286,7 +286,7 @@ impl TabList {
         };
         fetch.set_visible(false);
 
-        let list = TabList {
+        TabList {
             root,
             b: b.weak(),
             side,
@@ -307,23 +307,7 @@ impl TabList {
             kept,
             editing: Cell::new(None),
             renaming: Cell::new(false),
-            lettering: Cell::new(None),
-        };
-        if !side {
-            let weak = b.weak();
-            b.window.connect_default_width_notify(move |_| {
-                if let Some(b) = weak.upgrade() {
-                    b.refresh_tabs();
-                }
-            });
-            let weak = b.weak();
-            b.window.connect_maximized_notify(move |_| {
-                if let Some(b) = weak.upgrade() {
-                    glib::idle_add_local_once(move || b.refresh_tabs());
-                }
-            });
         }
-        list
     }
 
     fn browser(&self) -> Option<Rc<Browser>> {
@@ -476,9 +460,11 @@ impl TabList {
             let new = row.slide.parent().is_none();
             if new {
                 self.board.put(&row.slide, 0.0, *y);
+                row.y.set(*y);
+            } else {
+                row.y.to(*y, Curve::Settle);
             }
             row.slide.set_size_request(room as i32, ROW as i32);
-            row.y.to(*y, Curve::Settle);
             *y += ROW + GAP;
             if group.collapsed {
                 for id in &group.members {
@@ -539,9 +525,7 @@ impl TabList {
         let slide = Slide::new(&toggle);
         slide.set_anchor(0.0, 0.5);
         let (board, widget) = (self.board.clone(), slide.clone());
-        let at = Rc::new(Cell::new(0.0_f64));
         let y = Tween::new(&self.board, 0.0, move |v| {
-            at.set(v);
             if widget.parent().is_some() {
                 board.move_(&widget, 0.0, v);
             }
@@ -674,6 +658,7 @@ impl TabList {
             hovering: Cell::new(false),
             held: Cell::new(false),
             pinned: Cell::new(false),
+            letter_changed: RefCell::default(),
         });
         self.wire(b, tab, &item);
         item
@@ -798,7 +783,7 @@ impl TabList {
                 return;
             }
             item.held.set(true);
-            item.slide.add_css_class("held");
+            item.slide.add_css_class("slide-held");
             if let Some(side) = over {
                 landed_move.set(Some(side));
                 return;
@@ -814,9 +799,12 @@ impl TabList {
             };
             item.x.set(x);
             item.y.set(y);
-            let target = b.ui().tabs.borrow().as_ref().and_then(|l| l.target_for(&b, &tab, x, y));
-            if let Some(to) = target {
-                b.move_tab(&tab, to);
+            if let Some(list) = b.ui().tabs.borrow().as_ref() {
+                if let Some(onto) = list.group_neighbor(&b, &tab, x, y) {
+                    b.reorder_group_member(tab.id, onto);
+                } else if let Some(to) = list.target_for(&b, &tab, x, y) {
+                    b.move_tab(&tab, to);
+                }
             }
         });
         let it = Rc::downgrade(item);
@@ -826,7 +814,7 @@ impl TabList {
             if !item.held.get() {
                 return;
             }
-            item.slide.remove_css_class("held");
+            item.slide.remove_css_class("slide-held");
             item.held.set(false);
             if let Some(b) = weak.upgrade() {
                 if let Some(side) = landed.take()
@@ -853,6 +841,7 @@ impl TabList {
                 if let Some(b) = weak.upgrade()
                     && let Some(list) = b.ui().tabs.borrow().as_ref()
                 {
+                    list.end_letter();
                     list.end_edit(false);
                 }
                 return glib::Propagation::Stop;
@@ -874,6 +863,7 @@ impl TabList {
             let Some(b) = weak.upgrade() else { return };
             glib::idle_add_local_once(move || {
                 if let Some(list) = b.ui().tabs.borrow().as_ref() {
+                    list.end_letter();
                     list.end_edit(true);
                 }
             });
@@ -889,10 +879,15 @@ impl TabList {
         let items = self.items.borrow();
         let item = items.get(&tab.id)?;
         let (cx, cy) = (x + item.width.get() / 2.0, y + item.height.get() / 2.0);
+        let grouped = |id: u64| b.groups.borrow().iter().any(|group| group.members.contains(&id));
+        let mine = grouped(tab.id);
         let best = tabs
             .iter()
             .enumerate()
-            .filter(|(_, t)| (t.pin.borrow().is_some()) == pinned)
+            .filter(|(_, t)| (t.pin.borrow().is_some()) == pinned && grouped(t.id) == mine)
+            .filter(|(_, t)| {
+                t.id == tab.id || self.items.borrow().get(&t.id).is_some_and(|item| item.slide.is_visible())
+            })
             .filter_map(|(i, t)| {
                 let it = items.get(&t.id)?;
                 let (tx, ty) = if t.id == tab.id { (x, y) } else { (it.x.target(), it.y.target()) };
@@ -902,6 +897,29 @@ impl TabList {
             .min_by(|a, b| a.1.total_cmp(&b.1))
             .map(|(i, _)| i)?;
         (best != here).then_some(best)
+    }
+
+    /// The group member under the pointer, when `tab` is in that same group.
+    fn group_neighbor(&self, b: &Browser, tab: &Tab, x: f64, y: f64) -> Option<u64> {
+        let groups = b.groups.borrow();
+        let group = groups.iter().find(|group| group.members.contains(&tab.id))?;
+        let items = self.items.borrow();
+        let item = items.get(&tab.id)?;
+        let (cx, cy) = (x + item.width.get() / 2.0, y + item.height.get() / 2.0);
+        group
+            .members
+            .iter()
+            .filter(|id| **id != tab.id)
+            .filter_map(|id| {
+                let it = items.get(id)?;
+                if !it.slide.is_visible() {
+                    return None;
+                }
+                let (mx, my) = (it.x.target() + it.width.get() / 2.0, it.y.target() + it.height.get() / 2.0);
+                Some((*id, (mx - cx).hypot(my - cy)))
+            })
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(id, _)| id)
     }
 
     /// Dress one tab's piece in its current state.
@@ -922,10 +940,10 @@ impl TabList {
         item.icon.set_visible(show_icon);
         item.mark.set_label(&tab.monogram());
         item.mark.set_visible(!pinned && !show_icon && !loading && !tab.is_blank());
-        item.mark.remove_css_class("letter");
         item.shy.set_visible(tab.shy && !pinned);
+        let narrow = item.body.has_css_class("compact");
         item.label.set_label(&tab.label());
-        item.label.set_visible(!pinned && !WidgetExt::is_visible(&item.edit));
+        item.label.set_visible(!pinned && !narrow && !WidgetExt::is_visible(&item.edit));
         item.slide.set_tooltip_text(Some(&tab.label()));
         item.spinner.set_visible(loading);
         item.spinner.set_spinning(loading);
@@ -939,7 +957,7 @@ impl TabList {
         // A square pin tile would otherwise stretch the logo to the tile's height.
         item.icon.set_halign(gtk::Align::Center);
         item.icon.set_valign(gtk::Align::Center);
-        if pinned {
+        if pinned || narrow {
             item.body.set_halign(gtk::Align::Center);
             item.label.set_hexpand(false);
         } else {
@@ -951,6 +969,16 @@ impl TabList {
     pub fn update(&self, tab: &Rc<Tab>, what: Change) {
         let Some(b) = self.browser() else { return };
         self.dress(&b, tab);
+        let group = b.groups.borrow().iter().find(|group| group.members.contains(&tab.id)).map(|group| Group {
+            id: group.id,
+            members: group.members.clone(),
+            collapsed: group.collapsed,
+        });
+        if let Some(group) = group
+            && let Some(row) = self.groups.borrow().get(&group.id).cloned()
+        {
+            self.dress_group(&b, &row, &group);
+        }
         match what {
             Change::Meter => self.place_pill(&b),
             Change::Address | Change::Loading => self.update_helm(),
@@ -1073,7 +1101,7 @@ impl TabList {
     /// A pin's letter, to be typed over.
     pub fn edit_letter(&self, tab: &Rc<Tab>) {
         let Some(item) = self.items.borrow().get(&tab.id).cloned() else { return };
-        self.lettering.set(Some(tab.id));
+        self.end_letter();
         item.edit.set_max_length(1);
         item.edit.set_text(&tab.pin.borrow().clone().unwrap_or_default());
         item.mark.set_visible(false);
@@ -1084,31 +1112,42 @@ impl TabList {
         item.edit.select_region(0, -1);
         let weak = self.b.clone();
         let id = tab.id;
-        let handler: Rc<RefCell<Option<glib::SignalHandlerId>>> = Rc::default();
-        let h = handler.clone();
-        let edit = item.edit.clone();
-        *handler.borrow_mut() = Some(item.edit.connect_changed(move |e| {
-            let letter: String = e.text().chars().next().map(|c| c.to_uppercase().collect()).unwrap_or_default();
+        *item.letter_changed.borrow_mut() = Some(item.edit.connect_changed(move |entry| {
+            let letter: String = entry.text().chars().next().map(|c| c.to_uppercase().collect()).unwrap_or_default();
             if letter.is_empty() {
                 return;
             }
             let Some(b) = weak.upgrade() else { return };
             if let Some(tab) = b.tab(id) {
                 *tab.pin.borrow_mut() = Some(letter);
-                if let Some(list) = b.ui().tabs.borrow().as_ref() {
-                    list.lettering.set(None);
-                    if let Some(item) = list.items.borrow().get(&id) {
-                        item.edit.set_visible(false);
-                        item.edit.set_max_length(0);
-                    }
-                    list.dress(&b, &tab);
-                }
                 b.save_soon();
             }
-            if let Some(id) = h.take() {
-                edit.disconnect(id);
+            if let Some(list) = b.ui().tabs.borrow().as_ref() {
+                list.end_letter();
             }
         }));
+    }
+
+    /// Drop the pin-letter handler so a later rename cannot write the pin.
+    pub fn end_letter(&self) {
+        let Some(b) = self.browser() else { return };
+        let pending: Vec<(u64, glib::SignalHandlerId)> = self
+            .items
+            .borrow()
+            .iter()
+            .filter_map(|(id, item)| item.letter_changed.borrow_mut().take().map(|handler| (*id, handler)))
+            .collect();
+        for (id, handler) in pending {
+            if let Some(item) = self.items.borrow().get(&id) {
+                item.edit.disconnect(handler);
+                item.edit.set_visible(false);
+                item.edit.set_max_length(0);
+                item.edit.set_width_chars(-1);
+            }
+            if let Some(tab) = b.tab(id) {
+                self.dress(&b, &tab);
+            }
+        }
     }
 }
 
@@ -1135,22 +1174,17 @@ pub fn axes(board: &gtk::Fixed, child: &impl IsA<gtk::Widget>) -> (Tween, Tween)
 
 /// The half of the page a dragged tab is over, once the pointer has left the sidebar.
 fn drop_side(b: &Browser, x: f64, y: f64) -> Option<Side> {
-    if y < 0.0 || y > b.window.height() as f64 {
-        return None;
-    }
-    let width = b.window.width() as f64;
     let prefs = b.prefs.borrow();
-    let (left, right) = if !prefs.sidebar {
-        (0.0, width)
-    } else if prefs.side_right {
-        (0.0, (width - prefs.side_width).max(0.0))
-    } else {
-        (prefs.side_width, width)
-    };
-    if x < left + 12.0 || x > right {
-        return None;
-    }
-    Some(if x < (left + right) / 2.0 { Side::Left } else { Side::Right })
+    layout::drop_side_at(
+        prefs.sidebar,
+        prefs.side_right,
+        prefs.side_width,
+        b.window.width() as f64,
+        b.window.height() as f64,
+        STRIP,
+        x,
+        y,
+    )
 }
 
 /// A new piece arrives growing from its leading edge.

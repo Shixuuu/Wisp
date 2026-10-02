@@ -183,7 +183,12 @@ fn take(b: &Rc<Browser>, key: gdk::Key, code: u32, mods: gdk::ModifierType) -> b
         }
         gdk::Key::n if shift => b.new_shy_tab(),
         gdk::Key::n => b.new_tab(),
-        gdk::Key::y if !shift => ui.panels.toggle(Panel::History),
+        gdk::Key::y if !shift => {
+            if typing(b) {
+                return false;
+            }
+            ui.panels.toggle(Panel::History);
+        }
         gdk::Key::j if shift => ui.panels.toggle(Panel::Downloads),
         gdk::Key::v if shift => {
             if typing(b) {
@@ -225,7 +230,12 @@ fn take(b: &Rc<Browser>, key: gdk::Key, code: u32, mods: gdk::ModifierType) -> b
         gdk::Key::b if shift => bookmark(b),
         gdk::Key::comma if !shift => ui.panels.toggle(Panel::Settings),
         gdk::Key::h if shift => b.toggle_hiding(),
-        gdk::Key::u if shift => ui.panels.show_hidden(!ui.panels.hidden_showing()),
+        gdk::Key::u if shift => {
+            if typing(b) {
+                return false;
+            }
+            ui.panels.show_hidden(!ui.panels.hidden_showing());
+        }
         gdk::Key::z if !shift => {
             if !b.veiling.get() {
                 return false;

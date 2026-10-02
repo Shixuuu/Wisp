@@ -9,7 +9,7 @@
 # ImageMagick's `import` for screenshots of failures.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
-cargo build --quiet
+cargo build --locked --quiet
 PYTHON="${PYTHON:-python3}"
 if [ -z "${DISPLAY:-}" ]; then
   export DISPLAY=:77

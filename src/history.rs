@@ -16,8 +16,11 @@ const KEEP: usize = 20_000;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Visit {
+    #[serde(default)]
     pub url: String,
+    #[serde(default)]
     pub title: String,
+    #[serde(default)]
     pub count: u32,
     /// Seconds since the Unix epoch.
     pub last: i64,
@@ -76,9 +79,9 @@ impl History {
         if !self.dirty {
             return;
         }
-        self.dirty = false;
-        if let Err(err) = store::save(&Self::file(), &self.visits) {
-            eprintln!("wisp: couldn't save history: {err}");
+        match store::save(&Self::file(), &self.visits) {
+            Ok(()) => self.dirty = false,
+            Err(err) => eprintln!("wisp: couldn't save history: {err}"),
         }
     }
 

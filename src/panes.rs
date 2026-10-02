@@ -202,11 +202,12 @@ impl Panes {
     }
 
     pub fn hide(&self) {
-        let ids: Vec<u64> = self.slots.borrow().keys().copied().collect();
-        for id in ids {
-            self.detach(id);
-        }
-        self.root.set_visible(false);
+        self.detach_all();
+    }
+
+    /// The view left, so the next one has to be wired for focus again.
+    pub fn unwatch(&self, id: u64) {
+        self.watched.borrow_mut().retain(|kept| *kept != id);
     }
 
     /// Views that were on the board, now parentless, in no particular order.
@@ -246,6 +247,7 @@ impl Panes {
     }
 
     fn detach(&self, id: u64) -> Option<WebView> {
+        self.unwatch(id);
         let slot = self.slots.borrow_mut().remove(&id)?;
         let view = slot.body.first_child().and_then(|child| child.downcast::<WebView>().ok());
         if let Some(view) = view.clone() {

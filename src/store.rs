@@ -50,22 +50,50 @@ fn glib_download_dir() -> Option<PathBuf> {
 }
 
 /// Read a JSON file, or fall back to the default when it is missing or broken.
-/// A broken file is kept aside as `name.broken` rather than overwritten, so a
-/// bug never silently eats somebody's history.
+/// A broken file is kept aside rather than overwritten, so a bug never
+/// silently eats somebody's history. A file that cannot be read is left in
+/// place, and [`save`] refuses to replace it.
 pub fn load<T: DeserializeOwned + Default>(path: &Path) -> T {
-    let Ok(bytes) = fs::read(path) else { return T::default() };
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return T::default(),
+        Err(err) => {
+            eprintln!("wisp: {} could not be read ({err}); leaving it untouched", path.display());
+            return T::default();
+        }
+    };
     match serde_json::from_slice(&bytes) {
         Ok(value) => value,
         Err(err) => {
             eprintln!("wisp: {} is unreadable ({err}); starting fresh", path.display());
-            let _ = fs::rename(path, path.with_extension("broken"));
+            park_broken(path);
             T::default()
         }
     }
 }
 
+/// Move a broken file aside. A second broken copy gets its own name, so the
+/// first one is still there.
+fn park_broken(path: &Path) {
+    let broken = path.with_extension("broken");
+    let dest = if broken.exists() {
+        let stamp =
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        path.with_extension(format!("broken.{stamp}"))
+    } else {
+        broken
+    };
+    let _ = fs::rename(path, dest);
+}
+
 /// Write a JSON file atomically.
 pub fn save<T: Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
+    if path.exists() && fs::read(path).is_err() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "refusing to replace a file that could not be read",
+        ));
+    }
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)?;
     }
@@ -77,4 +105,64 @@ pub fn save<T: Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
         file.sync_data()?;
     }
     fs::rename(tmp, path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde::{Deserialize, Serialize};
+    use std::os::unix::fs::PermissionsExt;
+
+    #[derive(Serialize, Deserialize, Default, PartialEq, Debug)]
+    struct Note {
+        word: String,
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("wisp-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_failed_save_leaves_the_previous_file() {
+        let dir = scratch("save");
+        let path = dir.join("history.json");
+        save(&path, &Note { word: "kept".into() }).unwrap();
+        let before = fs::read(&path).unwrap();
+        let mut perms = fs::metadata(&path).unwrap().permissions();
+        perms.set_mode(0o000);
+        fs::set_permissions(&path, perms).unwrap();
+        let err = save(&path, &Note { word: "gone".into() }).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+        let mut perms = fs::metadata(&path).unwrap().permissions();
+        perms.set_mode(0o644);
+        fs::set_permissions(&path, perms).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), before);
+        let loaded: Note = load(&path);
+        assert_eq!(loaded.word, "kept");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_second_broken_copy_keeps_the_first() {
+        let dir = scratch("broken");
+        let path = dir.join("history.json");
+        fs::write(&path, b"not json").unwrap();
+        let _: Note = load(&path);
+        let parked = path.with_extension("broken");
+        let first = fs::read(&parked).unwrap();
+        assert_eq!(first, b"not json");
+        fs::write(&path, b"also bad").unwrap();
+        let _: Note = load(&path);
+        assert_eq!(fs::read(&parked).unwrap(), first);
+        let extras = fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with("history.broken."))
+            .count();
+        assert_eq!(extras, 1);
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

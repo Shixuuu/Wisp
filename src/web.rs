@@ -6,7 +6,10 @@ use crate::{shield, store};
 use gtk::glib;
 use std::cell::RefCell;
 use std::rc::Rc;
-use webkit6::{CacheModel, HardwareAccelerationPolicy, NetworkSession, UserContentFilter, UserContentFilterStore};
+use webkit6::{
+    CacheModel, CookiePersistentStorage, HardwareAccelerationPolicy, NetworkSession, UserContentFilter,
+    UserContentFilterStore,
+};
 
 pub struct Web {
     /// Cookies, site data and cache on disk, for ordinary tabs.
@@ -25,6 +28,12 @@ impl Web {
         let session = NetworkSession::new(data.to_str(), cache.to_str());
         session.set_persistent_credential_storage_enabled(true);
         prepare(&session, !prefs.keeps_sign_ins);
+        // WebKitGTK keeps cookies in memory unless told otherwise, which signs
+        // you out of everything at every launch.
+        if let Some(cookies) = session.cookie_manager() {
+            let jar = data.join("cookies.sqlite");
+            cookies.set_persistent_storage(&jar.to_string_lossy(), CookiePersistentStorage::Sqlite);
+        }
         if let Some(context) = webkit6::WebContext::default() {
             context.set_cache_model(CacheModel::WebBrowser);
             context.set_spell_checking_enabled(true);
@@ -41,7 +50,7 @@ impl Web {
             return (s.clone(), false);
         }
         let s = NetworkSession::new_ephemeral();
-        // Private tabs keep tracking prevention on whatever the setting says.
+        // Private tabs always keep tracking prevention on.
         prepare(&s, true);
         *shy = Some(s.clone());
         (s, true)
@@ -56,22 +65,64 @@ impl Web {
     }
 
     /// Compile the block list into WebKit's bytecode, kept in the cache.
+    /// A list already on disk is used at once, so restored tabs are filtered
+    /// before the new compile finishes.
     pub fn compile_shield(self: &Rc<Self>, done: impl FnOnce(Result<(), String>) + 'static) {
         let dir = store::cache_dir().join("filters");
         let _ = std::fs::create_dir_all(&dir);
         let filters = UserContentFilterStore::new(&dir.to_string_lossy());
         let source = glib::Bytes::from_owned(shield::rules().into_bytes());
         let web = Rc::downgrade(self);
-        filters.save(shield::IDENTIFIER, &source, None::<&gtk::gio::Cancellable>, move |result| match result {
-            Ok(filter) => {
-                if let Some(web) = web.upgrade() {
-                    *web.filter.borrow_mut() = Some(filter);
+        let again = filters.clone();
+        let mut done = Some(done);
+        filters.load(shield::IDENTIFIER, None::<&gtk::gio::Cancellable>, move |result| {
+            if let Ok(filter) = result
+                && let Some(web) = web.upgrade()
+            {
+                *web.filter.borrow_mut() = Some(filter);
+                if let Some(done) = done.take() {
+                    done(Ok(()));
                 }
-                done(Ok(()));
             }
-            Err(err) => done(Err(err.to_string())),
+            let web = web.clone();
+            let done = done.take();
+            again.save(shield::IDENTIFIER, &source, None::<&gtk::gio::Cancellable>, move |result| match result {
+                Ok(filter) => {
+                    if let Some(web) = web.upgrade() {
+                        *web.filter.borrow_mut() = Some(filter);
+                    }
+                    if let Some(done) = done {
+                        done(Ok(()));
+                    }
+                }
+                Err(err) => {
+                    if let Some(done) = done {
+                        done(Err(err.to_string()));
+                    }
+                }
+            });
         });
     }
+}
+
+/// WebKitGTK plays audio and video through GStreamer's "good" plugins
+/// (the MP4 and WebM demuxers and the audio sink). Without them it looks
+/// up an element, gets nothing back, and the page's web process aborts, so
+/// YouTube and sign-in pages die the moment a video starts. Returns false
+/// when they are missing.
+pub fn media_ready() -> bool {
+    let mut dirs: Vec<std::path::PathBuf> = std::env::var_os("GST_PLUGIN_SYSTEM_PATH_1_0")
+        .map(|paths| std::env::split_paths(&paths).collect())
+        .unwrap_or_default();
+    for dir in [
+        "/usr/lib/gstreamer-1.0",
+        "/usr/lib64/gstreamer-1.0",
+        "/usr/lib/x86_64-linux-gnu/gstreamer-1.0",
+        "/usr/lib/aarch64-linux-gnu/gstreamer-1.0",
+    ] {
+        dirs.push(dir.into());
+    }
+    dirs.iter().any(|dir| dir.join("libgstisomp4.so").exists() && dir.join("libgstautodetect.so").exists())
 }
 
 fn prepare(session: &NetworkSession, tracking_prevention: bool) {
@@ -96,6 +147,7 @@ pub fn apply(s: &webkit6::Settings, prefs: &Prefs) {
     s.set_enable_webrtc(true);
     s.set_enable_mediasource(true);
     s.set_enable_encrypted_media(true);
+    // Left on. Turning it off was not a measured drop in the browser's memory.
     s.set_enable_page_cache(true);
     s.set_enable_fullscreen(true);
     s.set_enable_html5_local_storage(true);

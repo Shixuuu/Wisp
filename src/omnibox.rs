@@ -42,6 +42,11 @@ const COMMANDS: &[(&str, &str)] = &[
     ("sidebar", "win.toggle-sidebar"),
 ];
 
+/// A parked pill is showing its address and not being edited. Escape belongs to the page.
+pub fn parked_escape_reaches_page(editing: bool, summoning: bool, offer_picked: bool) -> bool {
+    !editing && !summoning && !offer_picked
+}
+
 pub struct Omnibox {
     b: Weak<Browser>,
     place: motion::Place,
@@ -71,7 +76,6 @@ pub struct Omnibox {
 impl Omnibox {
     pub fn new(b: &Rc<Browser>) -> Rc<Omnibox> {
         let dim = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        dim.add_css_class("dim-page");
         dim.set_hexpand(true);
         dim.set_vexpand(true);
 
@@ -244,7 +248,13 @@ impl Omnibox {
                     me.accept_ending()
                 }
                 gdk::Key::BackSpace | gdk::Key::Delete => {
-                    me.deleting.set(true);
+                    let text = me.text.text();
+                    let at = me.text.position();
+                    let moves = match key {
+                        gdk::Key::BackSpace => at > 0,
+                        _ => at < text.chars().count() as i32,
+                    };
+                    me.deleting.set(moves && !text.is_empty());
                     return glib::Propagation::Proceed;
                 }
                 gdk::Key::Return | gdk::Key::KP_Enter if ctrl => {
@@ -341,7 +351,7 @@ impl Omnibox {
     /// so the rest of the page can be used.
     fn veil(&self, catch: bool) {
         self.dim.set_opacity(0.0);
-        self.dim.remove_css_class("dim-page");
+
         self.dim.set_visible(catch);
         self.dim.set_can_target(catch);
         if let Some(layer) = self.column.parent() {
@@ -389,6 +399,8 @@ impl Omnibox {
         if tab.is_blank() {
             let draft = tab.draft.borrow().clone();
             *self.typed.borrow_mut() = draft.clone();
+            self.picked.set(None);
+            self.ending.take();
             self.set_text(&draft);
             self.offers.borrow_mut().clear();
             self.render();
@@ -452,10 +464,16 @@ impl Omnibox {
     }
 
     /// Escape: the list first, then the field. True when it did something.
+    /// A parked pill over a page does not take the key, so the page can.
     pub fn escape(&self) -> bool {
         let Some(b) = self.browser() else { return false };
         let Some(tab) = b.active() else { return false };
         if !self.showing() {
+            return false;
+        }
+        if !tab.is_blank()
+            && parked_escape_reaches_page(self.editing.get(), self.summoning.get(), self.picked.get().is_some())
+        {
             return false;
         }
         if self.picked.get().is_some() {
@@ -558,7 +576,9 @@ impl Omnibox {
                 .iter()
                 .filter(|t| !b.is_active(t) && !t.is_blank())
                 .filter(|t| {
-                    needle.is_empty() || t.label().to_lowercase().contains(&needle) || t.address().contains(&needle)
+                    needle.is_empty()
+                        || t.label().to_lowercase().contains(&needle)
+                        || t.address().to_lowercase().contains(&needle)
                 })
                 .cloned()
                 .collect();
@@ -745,7 +765,9 @@ impl Omnibox {
         self.summoning.set(false);
         match &offer.kind {
             Kind::Command(action) => {
-                ActionGroupExt::activate_action(&b.window, action.trim_start_matches("win."), None);
+                let action = action.trim_start_matches("win.");
+                self.dismiss();
+                ActionGroupExt::activate_action(&b.window, action, None);
             }
             Kind::Open(id) => {
                 if let Some(t) = b.tab(*id) {
@@ -773,7 +795,7 @@ impl Omnibox {
             }
             return;
         }
-        if self.summoning.replace(false) && self.typed().trim().is_empty() {
+        if self.summoning.replace(false) {
             self.dismiss();
             return;
         }
@@ -781,7 +803,8 @@ impl Omnibox {
             self.editing.set(false);
             self.typed.borrow_mut().clear();
             self.dismiss();
-            ActionGroupExt::activate_action(&b.window, action.trim_start_matches("win."), None);
+            let action = action.trim_start_matches("win.");
+            ActionGroupExt::activate_action(&b.window, action, None);
             return;
         }
         let text = self.text.text().to_string();
@@ -808,5 +831,18 @@ impl Omnibox {
         } else {
             b.go(&url);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parked_escape_does_not_consume_the_key() {
+        assert!(parked_escape_reaches_page(false, false, false));
+        assert!(!parked_escape_reaches_page(true, false, false));
+        assert!(!parked_escape_reaches_page(false, true, false));
+        assert!(!parked_escape_reaches_page(false, false, true));
     }
 }

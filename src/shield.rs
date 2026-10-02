@@ -97,13 +97,33 @@ const SLOTS_BY_SITE: &[(&[&str], &str)] = &[
     (&["*cnn.com"], ".ad-slot-header__wrapper"),
 ];
 
+/// A third-party request for this registrable domain, on the web or a socket.
+/// The domain ends at the host boundary, so `adjust.com` does not match
+/// `adjust.comcast.net`.
+pub fn blocker(domain: &str) -> String {
+    let escaped = domain.replace('.', "\\.");
+    format!("^(https?|wss?)://([^/?#]+\\.)?{escaped}([:/?#]|$)")
+}
+
+/// Whether `url`'s host is `domain` or a subdomain of it.
+#[allow(dead_code)] // The compiled rule is what WebKit runs. Tests call this form of the same decision.
+pub fn blocks_host(domain: &str, url: &str) -> bool {
+    let Some(rest) = url.split_once("://") else { return false };
+    let scheme = &url[..url.len() - rest.1.len() - 3];
+    if !matches!(scheme, "http" | "https" | "ws" | "wss") {
+        return false;
+    }
+    let host = rest.1.split(['/', '?', '#', ':']).next().unwrap_or("");
+    let host = host.trim_end_matches('.');
+    host == domain || host.ends_with(&format!(".{domain}"))
+}
+
 pub fn rules() -> String {
     let mut rules: Vec<Value> = UNWANTED
         .iter()
         .map(|domain| {
-            let escaped = domain.replace('.', "\\.");
             json!({
-                "trigger": { "url-filter": format!("^https?://([^/]+\\.)?{escaped}"), "load-type": ["third-party"] },
+                "trigger": { "url-filter": blocker(domain), "load-type": ["third-party"] },
                 "action": { "type": "block" }
             })
         })
@@ -119,4 +139,25 @@ pub fn rules() -> String {
         }));
     }
     Value::Array(rules).to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shield_rules_stop_at_the_host_boundary() {
+        let pattern = blocker("adjust.com");
+        assert!(pattern.contains("wss?"));
+        let compiled: serde_json::Value = serde_json::from_str(&rules()).unwrap();
+        let filters: Vec<&str> =
+            compiled.as_array().unwrap().iter().filter_map(|rule| rule["trigger"]["url-filter"].as_str()).collect();
+        assert!(filters.contains(&pattern.as_str()));
+        assert!(blocks_host("adjust.com", "https://adjust.com/pixel"));
+        assert!(blocks_host("adjust.com", "wss://track.adjust.com/socket"));
+        assert!(blocks_host("adjust.com", "ws://adjust.com"));
+        assert!(!blocks_host("adjust.com", "https://adjust.comcast.net/"));
+        assert!(!blocks_host("adjust.com", "https://notadjust.com/"));
+        assert!(!blocks_host("adjust.com", "file://adjust.com/x"));
+    }
 }

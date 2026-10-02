@@ -26,9 +26,18 @@ pub struct Curtain {
     pub by_host: BTreeMap<String, Vec<Veil>>,
 }
 
-/// The key a site's list is kept under: its host without `www.`.
-pub fn host_key(url: &str) -> Option<String> {
-    crate::address::bare_host(url)
+/// A selector that can sit inside one CSS rule. A `}` would close that rule
+/// and let the rest of the string become style of its own.
+pub fn safe_selector(raw: &str) -> Option<&str> {
+    let selector = raw.trim();
+    if selector.is_empty() || selector.len() > 300 {
+        return None;
+    }
+    let bad = |c: char| matches!(c, '{' | '}' | '<' | ';' | '\\' | '\n' | '\r' | '\0');
+    if selector.chars().any(bad) || selector.contains("/*") || selector.contains("*/") {
+        return None;
+    }
+    Some(selector)
 }
 
 impl Curtain {
@@ -51,6 +60,7 @@ impl Curtain {
     }
 
     pub fn hide(&mut self, host: &str, selector: &str, label: &str, note: &str) {
+        let Some(selector) = safe_selector(selector) else { return };
         let list = self.by_host.entry(host.to_string()).or_default();
         if list.iter().any(|v| v.selector == selector) {
             return;
@@ -95,9 +105,31 @@ impl Curtain {
     pub fn css_without(&self, host: &str, spared: Option<&str>) -> String {
         self.veils(host)
             .iter()
-            .filter(|v| Some(v.selector.as_str()) != spared)
+            .filter(|v| Some(v.selector.as_str()) != spared && safe_selector(&v.selector).is_some())
             .map(|v| format!("{} {{ display: none !important; }}", v.selector))
             .collect::<Vec<_>>()
             .join("\n")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_brace_cannot_close_the_veil_rule() {
+        assert!(safe_selector("#cookie").is_some());
+        assert!(safe_selector("div.banner > button").is_some());
+        assert!(safe_selector("} body { background: red").is_none());
+        assert!(safe_selector(".x; background: url(evil)").is_none());
+        assert!(safe_selector("").is_none());
+        let curtain = Curtain {
+            by_host: [(
+                "example.com".into(),
+                vec![Veil { selector: "} body".into(), label: String::new(), note: String::new(), date: 0 }],
+            )]
+            .into(),
+        };
+        assert!(curtain.css_without("example.com", None).is_empty());
     }
 }

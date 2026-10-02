@@ -118,7 +118,12 @@ impl Tween {
                 inner.running.take();
             }
         });
-        *self.inner.running.borrow_mut() = Some(animation);
+        let finished = animation.state() == adw::AnimationState::Finished;
+        if finished {
+            self.inner.running.take();
+        } else {
+            *self.inner.running.borrow_mut() = Some(animation);
+        }
     }
 
     /// Be there at once.
@@ -218,10 +223,6 @@ impl Slide {
     pub fn set_scale(&self, k: f64) {
         self.imp().scale.set(k as f32);
         self.queue_draw();
-    }
-
-    pub fn offset(&self) -> (f64, f64) {
-        (self.imp().dx.get() as f64, self.imp().dy.get() as f64)
     }
 }
 

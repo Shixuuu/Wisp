@@ -8,7 +8,9 @@ use std::path::PathBuf;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Bookmark {
+    #[serde(default)]
     pub id: u64,
+    #[serde(default)]
     pub title: String,
     /// None for a folder.
     pub url: Option<String>,
@@ -30,6 +32,12 @@ fn fresh_id() -> u64 {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let base = crate::history::now() as u64 * 1000;
     base + NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
+fn contains_url(nodes: &[Bookmark], url: &str) -> bool {
+    nodes
+        .iter()
+        .any(|node| node.url.as_deref().is_some_and(|have| same(have, url)) || contains_url(&node.children, url))
 }
 
 fn same(a: &str, b: &str) -> bool {
@@ -153,6 +161,9 @@ impl Bookmarks {
     /// Sites matching every word, with the folders they are filed under.
     pub fn matches(&self, query: &str) -> Vec<(Bookmark, Vec<String>)> {
         let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+        if words.is_empty() {
+            return vec![];
+        }
         fn walk(nodes: &[Bookmark], path: &mut Vec<String>, words: &[String], out: &mut Vec<(Bookmark, Vec<String>)>) {
             for n in nodes {
                 let hay = format!("{} {}", n.title, n.url.clone().unwrap_or_default()).to_lowercase();
@@ -192,6 +203,9 @@ impl Bookmarks {
                     self.convert(node, &mut found);
                 }
             }
+            if Self::count(&found) == 0 {
+                continue;
+            }
             let before = Self::count(&self.roots);
             self.roots.push(Bookmark { id: fresh_id(), title: format!("From {name}"), url: None, children: found });
             report.push((name.to_string(), Self::count(&self.roots) - before));
@@ -205,7 +219,8 @@ impl Bookmarks {
         match node.get("type").and_then(Value::as_str) {
             Some("url") => {
                 let url = node.get("url").and_then(Value::as_str).unwrap_or_default();
-                if (url.starts_with("http://") || url.starts_with("https://")) && self.find(url).is_none() {
+                let already = self.find(url).is_some() || contains_url(out, url);
+                if (url.starts_with("http://") || url.starts_with("https://")) && !already {
                     out.push(Bookmark { id: fresh_id(), title: name, url: Some(url.into()), children: vec![] });
                 }
             }

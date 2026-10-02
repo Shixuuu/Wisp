@@ -20,13 +20,13 @@ depends=(
   'libadwaita'
   'glib2'
   'gcc-libs'
+  'gst-plugins-good'  # WebKitGTK aborts on any video without it
   'glibc'
   'hicolor-icon-theme'
 )
 makedepends=('cargo' 'git')
 optdepends=(
   'xdg-desktop-portal-gtk: file pickers and opening downloads (or your desktop'"'"'s portal)'
-  'gst-plugins-good: audio and video playback'
   'gst-plugins-bad: more video formats'
   'gst-libav: H.264 and other proprietary codecs'
   'hunspell-en_us: spell checking (or another hunspell dictionary)'
