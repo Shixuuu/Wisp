@@ -222,11 +222,13 @@ impl Browser {
             None => view.load_uri(&tab.address()),
         }
         self.stage_add(tab);
+        self.capture(tab);
         self.changed(tab, Change::Sleep);
     }
 
     /// Give a tab's memory back; its address, title and history stay.
     pub fn sleep(&self, tab: &Tab) {
+        tab.preview.take();
         let Some(view) = tab.view.take() else { return };
         *tab.state.borrow_mut() = view.session_state().and_then(|s| s.serialize());
         // Released, not closed: closing would run the page's own close,
