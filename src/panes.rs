@@ -4,6 +4,7 @@
 use crate::layout::Rect;
 use crate::motion::{Curve, Tween};
 use adw::prelude::*;
+use gtk::glib;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -122,7 +123,7 @@ type PaneFocus = Rc<dyn Fn(u64)>;
 pub struct Panes {
     pub root: gtk::Fixed,
     slots: RefCell<HashMap<u64, Slot>>,
-    watched: RefCell<Vec<u64>>,
+    watched: RefCell<HashMap<u64, glib::SignalHandlerId>>,
     focus: RefCell<Option<PaneFocus>>,
 }
 
@@ -206,8 +207,10 @@ impl Panes {
     }
 
     /// The view left, so the next one has to be wired for focus again.
-    pub fn unwatch(&self, id: u64) {
-        self.watched.borrow_mut().retain(|kept| *kept != id);
+    pub fn unwatch(&self, id: u64, view: &WebView) {
+        if let Some(handler) = self.watched.borrow_mut().remove(&id) {
+            view.disconnect(handler);
+        }
     }
 
     /// Views that were on the board, now parentless, in no particular order.
@@ -232,25 +235,25 @@ impl Panes {
             view.set_vexpand(true);
             body.append(view);
         }
-        if self.watched.borrow().contains(&id) {
+        if self.watched.borrow().contains_key(&id) {
             return;
         }
-        self.watched.borrow_mut().push(id);
         let focus = self.focus.borrow().clone();
-        view.connect_notify_local(Some("has-focus"), move |view, _| {
+        let handler = view.connect_notify_local(Some("has-focus"), move |view, _| {
             if view.has_focus()
                 && let Some(focus) = focus.as_ref()
             {
                 focus(id);
             }
         });
+        self.watched.borrow_mut().insert(id, handler);
     }
 
     fn detach(&self, id: u64) -> Option<WebView> {
-        self.unwatch(id);
         let slot = self.slots.borrow_mut().remove(&id)?;
         let view = slot.body.first_child().and_then(|child| child.downcast::<WebView>().ok());
         if let Some(view) = view.clone() {
+            self.unwatch(id, &view);
             view.unparent();
         }
         if slot.shell.parent().is_some() {

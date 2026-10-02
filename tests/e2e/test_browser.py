@@ -191,6 +191,23 @@ def pinning_a_tab(app):
     check("a pin draws no title", not app.has(role="label", name="Daily News"))
 
 
+@test
+def pinned_ctrl_w_does_not_reopen_the_pin(app):
+    load(app, "http://news.test", "news.test")
+    app.key("ctrl+shift+p")
+    wait("the pin written down", lambda: any(t.get("pin") == "N" for t in (app.read("session.json") or {}).get("tabs", [])))
+    app.key("ctrl+t")
+    wait("the blank fallback tab", lambda: app.title() == "New Tab")
+    pin = app.see("the pinned site icon", role="image", name="Site icon")
+    app.click_node(pin)
+    wait("the pinned page", lambda: app.title() == "Daily News")
+    app.key("ctrl+w")
+    wait("the blank fallback after closing the pin", lambda: app.title() == "New Tab")
+    app.key("ctrl+w")
+    wait("a replacement blank tab", lambda: app.title() == "New Tab")
+    check("the pin remains in the session", any(t.get("pin") == "N" for t in (app.read("session.json") or {}).get("tabs", [])))
+
+
 def pin_grid(app):
     """Four loaded pins in two rows of two, then one ordinary row.
 

@@ -232,7 +232,7 @@ impl Browser {
         // Released, not closed: closing would run the page's own close,
         // which closes the tab.
         self.stage_remove(&view);
-        self.panes_unwatch(tab.id);
+        self.panes_unwatch(tab.id, &view);
         tab.tuned.take();
         tab.content.take();
         tab.loading.set(false);

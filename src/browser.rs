@@ -537,8 +537,8 @@ impl Browser {
         }
     }
 
-    pub(crate) fn panes_unwatch(&self, id: u64) {
-        self.panes.unwatch(id);
+    pub(crate) fn panes_unwatch(&self, id: u64, view: &webkit6::WebView) {
+        self.panes.unwatch(id, view);
     }
 
     pub fn stage_remove(&self, view: &webkit6::WebView) {
@@ -811,9 +811,17 @@ impl Browser {
                     self.veil_off();
                     let next = {
                         let tabs = self.tabs.borrow();
-                        tabs[index.min(tabs.len() - 1)].clone()
+                        let start = index.min(tabs.len() - 1);
+                        tabs[start..]
+                            .iter()
+                            .chain(tabs[..start].iter())
+                            .find(|tab| !tab.asleep() || tab.pin.borrow().is_none())
+                            .cloned()
                     };
-                    self.select(&next);
+                    match next {
+                        Some(next) => self.select(&next),
+                        None => self.new_tab(),
+                    };
                 }
             }
         }
