@@ -1080,7 +1080,7 @@ fn tabs(b: &Rc<Browser>, page: &gtk::Box) {
     c.append(&rule(14));
     c.append(&line(
         "Sleep tabs you aren't using",
-        Some("After half an hour away they come back where you left them. Pinned tabs and sound stay awake."),
+        Some("After half an hour away they come back where you left them. Sound, and a page in a split, stay awake."),
         &toggle(b, b.prefs.borrow().sleeps_tabs, |b, on| b.prefs.borrow_mut().sleeps_tabs = on),
     ));
     c.append(&rule(14));

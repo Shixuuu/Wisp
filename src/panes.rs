@@ -19,6 +19,8 @@ struct Slot {
     y: Tween,
     w: Tween,
     h: Tween,
+    /// Unfired `map` handler. Cleared on fire, on the next `go`, and on detach.
+    pending_map: Rc<RefCell<Option<glib::SignalHandlerId>>>,
 }
 
 impl Slot {
@@ -70,7 +72,13 @@ impl Slot {
             let (width, height) = size_h.get();
             shell_h.set_size_request(width.round() as i32, height.round() as i32);
         });
-        Slot { shell, body, x, y, w, h }
+        Slot { shell, body, x, y, w, h, pending_map: Rc::new(RefCell::new(None)) }
+    }
+
+    fn disarm_map(&self) {
+        if let Some(id) = self.pending_map.borrow_mut().take() {
+            self.shell.disconnect(id);
+        }
     }
 
     fn to(&self, rect: Rect) {
@@ -86,6 +94,7 @@ impl Slot {
     /// the glide with a jump.
     fn go(&self, rect: Rect, animate: bool) {
         if !animate {
+            self.disarm_map();
             self.set(rect);
             return;
         }
@@ -94,20 +103,24 @@ impl Slot {
         self.w.aim(rect.w);
         self.h.aim(rect.h);
         if self.shell.is_mapped() {
+            self.disarm_map();
             self.to(rect);
             return;
         }
-        let once = Rc::new(Cell::new(false));
+        self.disarm_map();
+        let pending = Rc::clone(&self.pending_map);
         let (x, y, w, h) = (self.x.clone(), self.y.clone(), self.w.clone(), self.h.clone());
-        self.shell.connect_map(move |_| {
-            if once.replace(true) {
-                return;
-            }
+        let id = self.shell.connect_map(move |shell| {
+            let id = pending.borrow_mut().take();
             x.to(rect.x, Curve::Glide);
             y.to(rect.y, Curve::Glide);
             w.to(rect.w, Curve::Glide);
             h.to(rect.h, Curve::Glide);
+            if let Some(id) = id {
+                shell.disconnect(id);
+            }
         });
+        *self.pending_map.borrow_mut() = Some(id);
     }
 
     fn set(&self, rect: Rect) {
@@ -251,6 +264,7 @@ impl Panes {
 
     fn detach(&self, id: u64) -> Option<WebView> {
         let slot = self.slots.borrow_mut().remove(&id)?;
+        slot.disarm_map();
         let view = slot.body.first_child().and_then(|child| child.downcast::<WebView>().ok());
         if let Some(view) = view.clone() {
             self.unwatch(id, &view);

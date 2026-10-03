@@ -222,15 +222,19 @@ impl Browser {
             None => view.load_uri(&tab.address()),
         }
         self.stage_add(tab);
+        self.capture(tab);
         self.changed(tab, Change::Sleep);
     }
 
     /// Give a tab's memory back; its address, title and history stay.
     pub fn sleep(&self, tab: &Tab) {
+        tab.preview.take();
         let Some(view) = tab.view.take() else { return };
         *tab.state.borrow_mut() = view.session_state().and_then(|s| s.serialize());
-        // Released, not closed: closing would run the page's own close,
-        // which closes the tab.
+        // Drop only asks the process to exit. WebKit keeps it for the site, and a
+        // busy page may never answer. TerminatedByApi is ignored for a view that
+        // is no longer this tab's view.
+        view.terminate_web_process();
         self.stage_remove(&view);
         self.panes_unwatch(tab.id, &view);
         tab.tuned.take();
@@ -483,10 +487,17 @@ impl Browser {
         });
 
         let weak = self.weak();
+        let held_view = view.clone();
         view.connect_web_process_terminated(move |_, reason| {
             let Some(b) = weak.upgrade() else { return };
             let Some(tab) = on(&b) else { return };
             if reason == webkit6::WebProcessTerminationReason::TerminatedByApi {
+                if tab.view.borrow().as_ref().is_some_and(|held| held == &held_view) {
+                    let address = tab.address();
+                    if !address.is_empty() {
+                        held_view.load_uri(&address);
+                    }
+                }
                 return;
             }
             *tab.failure.borrow_mut() = Some(match reason {

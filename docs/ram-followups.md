@@ -25,63 +25,15 @@ it, then reopens it, piling up further.
 
 Commits: `260cc36`, `f07409a`.
 
+- **Background tabs wait until selected.** `Prefs::default` sets `lazy_tabs` to true (`src/settings.rs`). A saved settings file that already says false is left alone. A missing key still deserializes as false. Commit `3cd1e88`.
+- **Visited pins can sleep.** The 60 second sleeper no longer skips a pin (`Browser::start_timers` in `src/browser.rs`). The active tab, sound, and a page in the split still stay up. The settings sentence no longer says pins stay awake. Commit `1cc71b4`.
+- **Sleep drops the switcher picture.** `sleep` clears `Tab.preview`, and `wake` calls `capture` after `stage_add` (`src/tab.rs`). Commit `ceeb141`.
+- **A failed download leaves the list.** `connect_failed` removes the `Fetch` and still announces a real failure (`src/browser.rs`). Commit `c13255a`.
+- **The split map handler runs once.** `Slot` stores the handler id and disconnects it on fire, on the next `go`, and on detach (`src/panes.rs`). Commit `79afdd4`.
+
 ## Action items
 
-### 1. Default `lazy_tabs` to `true` (highest impact)
-
-`lazy_tabs` defaults to `false` (`src/settings.rs:151`). A background open —
-middle-click or Ctrl+click (`src/tab.rs:388-393`), bookmark middle-click
-(`src/panels.rs:1420`), or Ctrl+Return when not forced forward
-(`src/omnibox.rs:827-829`) — hits the eager branch at `src/browser.rs:718-722`
-and calls `build`, `load_uri`, `stage_add`. `build` (`src/tab.rs:157-206`)
-creates a `UserContentManager`, both script handlers, and a `WebView`, and
-`listen` connects the page signals. That view then sits in the `GtkStack`
-until close or the sleeper.
-
-With `lazy_tabs = true` the branch is skipped; the tab keeps its URL with no
-view (`src/tab.rs:105-107`) until it is selected and `wake` builds exactly one.
-The lazy path already exists and is skipped only because of the default.
-
-### 2. Let visited pins sleep
-
-The 60-second sleeper (`src/browser.rs:1479-1505`) only sleeps a tab that is
-inactive, unpinned (`src/browser.rs:1492`), not playing audio, not in the
-split, and idle for 30 minutes. A pin you have opened therefore stays a live
-`WebView` until `Ctrl+W`. This is the main way WebKit processes survive after
-the close-loop fix.
-
-Change: include pinned tabs in the sleeper, or sleep a pin when it stops being
-the active tab. Waking a selected pin already goes through `wake`
-(`src/tab.rs:209-223`), so selection is unaffected.
-
-### 3. Clear the switcher preview on sleep
-
-Nothing ever clears `Tab.preview`. It is written only in `capture`
-(`src/tab.rs:501-511`) and read only in the switcher (`src/switcher.rs:234`).
-`select` snapshots the tab being left (`src/browser.rs:642`) and the switcher
-snapshots the active tab (`src/switcher.rs:188-190`), so every tab you leave
-keeps a texture. `sleep` (`src/tab.rs:229-241`) drops the view, the content
-manager, and `tuned`, and leaves `preview` alone; a sleeping pin keeps it for
-the life of the `Tab`. Snapshots wider than 480 px are scaled
-(`src/tab.rs:518-533`), and the full texture is kept when `shrink` fails.
-
-This is UI-process RAM, not extra WebKit processes. Change: drop `preview` in
-`sleep` and re-capture on wake. `tab.icon` is also kept across sleep but is
-small; lower priority.
-
-### 4. Remove failed downloads
-
-`src/browser.rs:1157-1166` keeps a failed `Fetch` forever. Cancelled and
-finished ones are removed. This grows `Download` objects, not `WebView`s, so
-it is not the instance leak — but it is unbounded.
-
-### 5. Disconnect the `map` handler in `Slot::go`
-
-`Slot::go` connects `map` and never disconnects it (`src/panes.rs:100-110`).
-The closure owns `Tween`s, and those strong-reference the shell
-(`src/motion.rs:64-69`, `src/panes.rs:47-71`). The cycle exists only while the
-pane is unmapped. It leaks GTK widgets, not web processes; medium confidence
-it fires in steady use.
+None.
 
 ## Closed: page cache is not the cause
 

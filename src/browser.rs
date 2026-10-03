@@ -542,10 +542,15 @@ impl Browser {
     }
 
     pub fn stage_remove(&self, view: &webkit6::WebView) {
-        // A split pane's body is not the stack. Unparent takes the view down
-        // from whichever of the two is holding it.
-        if view.parent().is_some() {
-            view.unparent();
+        // A view leaving the stack has to be removed as a page, or its name
+        // stays registered and the next add_named for that tab is a duplicate.
+        // A split pane's body is not the stack, so unparent takes it down.
+        match view.parent() {
+            Some(parent) if parent == self.stage.clone().upcast::<gtk::Widget>() => {
+                self.stage.remove(view);
+            }
+            Some(_) => view.unparent(),
+            None => {}
         }
     }
 
@@ -1118,6 +1123,7 @@ impl Browser {
             let dir = store::downloads_dir();
             let _ = std::fs::create_dir_all(&dir);
             let path = crate::loot::free_name(&dir, suggested);
+            d.set_allow_overwrite(true);
             d.set_destination(&path.to_string_lossy());
             if let Some(b) = weak.upgrade() {
                 if let Some(f) = b.fetches.borrow_mut().iter_mut().find(|f| &f.download == d) {
@@ -1157,14 +1163,7 @@ impl Browser {
         download.connect_failed(move |d, err| {
             let Some(b) = weak.upgrade() else { return };
             let cancelled = err.matches(webkit6::DownloadError::CancelledByUser);
-            {
-                let mut fetches = b.fetches.borrow_mut();
-                if cancelled {
-                    fetches.retain(|f| &f.download != d);
-                } else if let Some(f) = fetches.iter_mut().find(|f| &f.download == d) {
-                    f.failed = Some(err.message().to_string());
-                }
-            }
+            b.fetches.borrow_mut().retain(|f| &f.download != d);
             if !cancelled {
                 b.announce(&format!("Download failed — {}", err.message()));
             }
@@ -1489,7 +1488,6 @@ impl Browser {
                     .filter(|t| {
                         !b.is_active(t)
                             && t.view.borrow().is_some()
-                            && t.pin.borrow().is_none()
                             && !t.noisy.get()
                             && !b.split.borrow().as_ref().is_some_and(|split| split.contains(t.id))
                             && t.touched.get().elapsed() > Duration::from_secs(30 * 60)

@@ -307,6 +307,11 @@ impl Omnibox {
         self.shown.target() > 0.5
     }
 
+    /// The field is up for typing, not merely parked over a page.
+    pub fn expanded(&self) -> bool {
+        self.editing.get() || self.summoning.get()
+    }
+
     pub fn summoning(&self) -> bool {
         self.summoning.get()
     }

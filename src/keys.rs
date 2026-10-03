@@ -121,7 +121,7 @@ fn take(b: &Rc<Browser>, key: gdk::Key, code: u32, mods: gdk::ModifierType) -> b
     }
 
     if ctrl && tab_key && !alt {
-        if ui.panels.open.get().is_none() && !b.veiling.get() && !ui.field.showing() {
+        if ui.panels.open.get().is_none() && !b.veiling.get() && !ui.field.expanded() {
             ui.switcher.step(key == gdk::Key::ISO_Left_Tab || shift);
         } else {
             b.step(if shift || key == gdk::Key::ISO_Left_Tab { -1 } else { 1 });

@@ -128,8 +128,9 @@ pub struct Prefs {
     pub page_zoom: f64,
     /// Zoom chosen with Ctrl+plus and Ctrl+minus, remembered per site.
     pub zooms: BTreeMap<String, f64>,
-    /// Answers to camera, microphone, location and notifications, as
-    /// "host kind" → allowed.
+    /// Answers to camera, microphone, location and notifications, keyed by
+    /// origin and kind as `permission_key` writes them, e.g.
+    /// "https://example.com:443 camera" → allowed.
     pub permissions: BTreeMap<String, bool>,
     pub always_shows_downloads: bool,
     pub hardware_acceleration: bool,
@@ -148,7 +149,7 @@ impl Default for Prefs {
             custom_engine: String::new(),
             keywords: arch_keywords(),
             sleeps_tabs: true,
-            lazy_tabs: false,
+            lazy_tabs: true,
             starts_fresh: false,
             shows_reading: true,
             shows_links: true,
