@@ -153,6 +153,43 @@ pub fn rules() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gtk::glib;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    fn save(dir: &std::path::Path, identifier: &str, json: &str) -> Result<(), String> {
+        let filters = webkit6::UserContentFilterStore::new(&dir.to_string_lossy());
+        let source = glib::Bytes::from_owned(json.as_bytes().to_vec());
+        let done: Rc<RefCell<Option<Result<(), String>>>> = Rc::default();
+        let out = done.clone();
+        let loop_ = glib::MainLoop::new(None, false);
+        let quit = loop_.clone();
+        filters.save(identifier, &source, None::<&gtk::gio::Cancellable>, move |result| {
+            *out.borrow_mut() = Some(result.map(|_| ()).map_err(|err| err.to_string()));
+            quit.quit();
+        });
+        loop_.run();
+        done.borrow_mut().take().unwrap()
+    }
+
+    #[test]
+    fn shield_rules_compile_on_webkit() {
+        gtk::init().unwrap();
+        let dir = std::env::temp_dir().join(format!("wisp-shield-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let ok = save(&dir, "wisp-shield-test", &rules());
+        assert!(ok.is_ok(), "rules() did not compile: {ok:?}");
+
+        let bad = save(&dir, "wisp-shield-test-bad", r#"[{"trigger":{"url-filter":"^(https?|wss?)://adjust\\.com"},"action":{"type":"block"}}]"#);
+        assert!(
+            bad.as_ref().err().is_some_and(|err| err.contains("Invalid or unsupported regular expression")),
+            "the | pattern did not fail with the toast text: {bad:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn shield_rules_stop_at_the_host_boundary() {
