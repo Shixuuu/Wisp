@@ -472,10 +472,14 @@ def links_open_in_new_tabs(app):
     shown(app, "news.test")
     app.server.forget()
     app.click_page(90, 30, button=2)
-    wait("the middle-clicked link to load behind", lambda: app.server.asked("news.test", "/next"), 10)
+    wait("the background row", lambda: app.has(role="label", name="news.test/next"), 10)
     check("still on the news", app.title() == "Daily News")
+    check("the background tab has not loaded yet", not app.server.asked("news.test", "/next"))
     app.click_page(290, 30)
     wait("the target=_blank link in a new tab", lambda: app.title() == "Corner Shop", 10)
+    app.press("the background row", role="label", name="news.test/next")
+    wait("the background tab loaded", lambda: app.server.asked("news.test", "/next"), 10)
+    wait("on the next page", lambda: app.title() == "Daily News — next", 10)
 
 
 @test
