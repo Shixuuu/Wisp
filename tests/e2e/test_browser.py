@@ -33,6 +33,33 @@ def shown(app, host):
     return wait(f"{host} to load", lambda: app.server.report(host), 12)
 
 
+def web_processes(pid):
+    seen = set()
+    found = []
+    stack = [pid]
+    while stack:
+        cur = stack.pop()
+        if cur in seen or not os.path.isdir(f"/proc/{cur}"):
+            continue
+        seen.add(cur)
+        task_dir = f"/proc/{cur}/task"
+        if os.path.isdir(task_dir):
+            for task in os.listdir(task_dir):
+                try:
+                    text = open(os.path.join(task_dir, task, "children")).read()
+                except OSError:
+                    continue
+                for word in text.split():
+                    stack.append(int(word))
+        try:
+            cmd = open(f"/proc/{cur}/cmdline", "rb").read().replace(b"\0", b" ").decode()
+        except OSError:
+            cmd = ""
+        if cur != pid and "WebKitWebProcess" in cmd:
+            found.append(cur)
+    return found
+
+
 PAGES = [
     ("http://news.test", "news.test", "Daily News", "N"),
     ("http://shop.test", "shop.test", "Corner Shop", "S"),
@@ -205,11 +232,21 @@ def pinned_ctrl_w_does_not_reopen_the_pin(app):
         if app.title() == "Daily News":
             break
     wait("the pinned page", lambda: app.title() == "Daily News")
+    before = web_processes(app.proc.pid)
+    check("the pinned page has a web process", before)
     app.key("ctrl+w")
     wait("the blank fallback after closing the pin", lambda: app.title() == "New Tab")
+    wait("the slept pin's web process to exit", lambda: all(not os.path.isdir(f"/proc/{pid}") for pid in before), 3)
     app.key("ctrl+w")
     wait("a replacement blank tab", lambda: app.title() == "New Tab")
     check("the pin remains in the session", any(t.get("pin") == "N" for t in (app.read("session.json") or {}).get("tabs", [])))
+    for _ in range(3):
+        app.pointer_click(x + 2 * width, y + height // 2)
+        if app.title() == "Daily News":
+            break
+    wait("the pin shown again", lambda: app.title() == "Daily News")
+    check("the old web process stays gone", all(not os.path.isdir(f"/proc/{pid}") for pid in before))
+    check("waking the pin starts a web process", web_processes(app.proc.pid))
 
 
 def pin_grid(app):
