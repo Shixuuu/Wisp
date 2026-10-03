@@ -513,12 +513,15 @@ class App:
             ox, oy = self.origin
             sx, sy = ox + bx + max(bw, 1) // 2, oy + by + max(bh, 1) // 2
             ex, ey = ox + int(x), oy + int(y)
-            subprocess.run(["xdotool", "mousemove", str(sx), str(sy)], check=True)
-            subprocess.run(["xdotool", "mousedown", "1"], check=True)
-            for i in range(1, 9):
-                mx, my = sx + (ex - sx) * i // 8, sy + (ey - sy) * i // 8
-                subprocess.run(["xdotool", "mousemove", str(mx), str(my)], check=True)
-            subprocess.run(["xdotool", "mouseup", "1"], check=True)
+            # One process for the whole gesture, a few points across it. The
+            # old one-process-per-step cost more than the spring the drop
+            # starts, so the test only ever sampled the resting panes.
+            gesture = ["xdotool", "mousemove", str(sx), str(sy), "mousedown", "1"]
+            for i in range(1, 5):
+                mx, my = sx + (ex - sx) * i // 4, sy + (ey - sy) * i // 4
+                gesture += ["mousemove", "--sync", str(mx), str(my)]
+            gesture += ["mouseup", "1"]
+            subprocess.run(gesture, check=True)
             return
         sx, sy = self._screen(bx + max(bw, 1) // 2, by + max(bh, 1) // 2)
         ex, ey = self.origin[0] + int(x), self.origin[1] + int(y)
