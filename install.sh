@@ -15,7 +15,9 @@ set -euo pipefail
 REPO="https://github.com/Shixuuu/Wisp.git"
 PKG="wisp-git"
 BUILD_DEPS=(base-devel git)
-RUNTIME_DEPS=(webkitgtk-6.0 gtk4 libadwaita hicolor-icon-theme)
+# gst-plugins-good is required, not optional: WebKitGTK aborts on any video
+# without it (see packaging/arch/PKGBUILD).
+RUNTIME_DEPS=(webkitgtk-6.0 gtk4 libadwaita gst-plugins-good hicolor-icon-theme)
 
 say()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33mwarning:\033[0m %s\n' "$*" >&2; }
