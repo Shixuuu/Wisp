@@ -542,10 +542,15 @@ impl Browser {
     }
 
     pub fn stage_remove(&self, view: &webkit6::WebView) {
-        // A split pane's body is not the stack. Unparent takes the view down
-        // from whichever of the two is holding it.
-        if view.parent().is_some() {
-            view.unparent();
+        // A view leaving the stack has to be removed as a page, or its name
+        // stays registered and the next add_named for that tab is a duplicate.
+        // A split pane's body is not the stack, so unparent takes it down.
+        match view.parent() {
+            Some(parent) if parent == self.stage.clone().upcast::<gtk::Widget>() => {
+                self.stage.remove(view);
+            }
+            Some(_) => view.unparent(),
+            None => {}
         }
     }
 
