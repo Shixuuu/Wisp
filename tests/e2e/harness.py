@@ -490,6 +490,9 @@ class App:
 
     def pointer_click(self, x, y):
         """A real compositor click at window coordinates."""
+        if HAVE_XDOTOOL:
+            self.click(x, y)
+            return
         self.focus()
         sx, sy = self._screen(x, y)
         subprocess.run([self._pointer_bin(), "click", str(sx), str(sy)], check=True, env=self._pointer_env())
@@ -498,13 +501,25 @@ class App:
     def drag(self, node, x, y, steps=16):
         """Press `node` and release at window coordinates `(x, y)`.
 
-        The motion is a virtual pointer the compositor delivers, because
-        AT-SPI mouse events do not become Wayland pointer events here.
-        `steps` is unused; the helper moves across about a third of a second.
+        On X11 the motion is xdotool's, in screen pixels. On Wayland it is a
+        virtual pointer the compositor delivers, because AT-SPI mouse events
+        do not become Wayland pointer events there. `steps` is unused; both
+        paths move across a few frames well under a fifth of a second.
         """
         del steps
         self.focus()
         bx, by, bw, bh = self.box(node)
+        if HAVE_XDOTOOL:
+            ox, oy = self.origin
+            sx, sy = ox + bx + max(bw, 1) // 2, oy + by + max(bh, 1) // 2
+            ex, ey = ox + int(x), oy + int(y)
+            subprocess.run(["xdotool", "mousemove", str(sx), str(sy)], check=True)
+            subprocess.run(["xdotool", "mousedown", "1"], check=True)
+            for i in range(1, 9):
+                mx, my = sx + (ex - sx) * i // 8, sy + (ey - sy) * i // 8
+                subprocess.run(["xdotool", "mousemove", str(mx), str(my)], check=True)
+            subprocess.run(["xdotool", "mouseup", "1"], check=True)
+            return
         sx, sy = self._screen(bx + max(bw, 1) // 2, by + max(bh, 1) // 2)
         ex, ey = self.origin[0] + int(x), self.origin[1] + int(y)
         subprocess.run(
