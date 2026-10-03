@@ -581,7 +581,10 @@ def a_site_asking_permission(app):
     app.see("the question", role="label", name="localhost wants to send you notifications")
     app.press("Allow", role="push button", name="Allow")
     wait("the page told yes", lambda: (app.server.report("localhost") or {}).get("notify") == "granted", 10)
-    check("the answer remembered", app.prefs().get("permissions", {}).get("localhost notifications") is True)
+    check(
+        "the answer remembered",
+        app.prefs().get("permissions", {}).get(f"http://localhost:{app.server.port} notifications") is True,
+    )
 
 
 @test
