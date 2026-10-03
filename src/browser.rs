@@ -1118,6 +1118,7 @@ impl Browser {
             let dir = store::downloads_dir();
             let _ = std::fs::create_dir_all(&dir);
             let path = crate::loot::free_name(&dir, suggested);
+            d.set_allow_overwrite(true);
             d.set_destination(&path.to_string_lossy());
             if let Some(b) = weak.upgrade() {
                 if let Some(f) = b.fetches.borrow_mut().iter_mut().find(|f| &f.download == d) {

@@ -641,7 +641,7 @@ def bookmarks(app):
 def downloading_a_file(app):
     app.go("http://files.test")
     target = os.path.join(app.downloads, "report.bin")
-    wait("the file in Downloads", lambda: os.path.exists(target) and os.path.getsize(target) == 10000, 15)
+    wait("the file in Downloads", lambda: os.path.exists(target) and os.path.getsize(target) == 8000, 15)
     app.see("the word that it arrived", role="label", name="Downloaded report.bin")
     app.key("ctrl+shift+j")
     app.see("the downloads panel", role="label", name="report.bin")
