@@ -97,12 +97,19 @@ const SLOTS_BY_SITE: &[(&[&str], &str)] = &[
     (&["*cnn.com"], ".ad-slot-header__wrapper"),
 ];
 
-/// A third-party request for this registrable domain, on the web or a socket.
-/// The domain ends at the host boundary, so `adjust.com` does not match
-/// `adjust.comcast.net`.
-pub fn blocker(domain: &str) -> String {
+/// The content-blocker patterns for a third-party request to this
+/// registrable domain, on the web or a socket. WebKit rejects `|`, so the
+/// schemes and the two ways a host can end are written as separate
+/// patterns. The domain ends at the host boundary, so `adjust.com` does not
+/// match `adjust.comcast.net`.
+pub fn blocker(domain: &str) -> Vec<String> {
     let escaped = domain.replace('.', "\\.");
-    format!("^(https?|wss?)://([^/?#]+\\.)?{escaped}([:/?#]|$)")
+    let mut patterns = Vec::with_capacity(4);
+    for scheme in ["https?", "wss?"] {
+        patterns.push(format!("^{scheme}://([^/?#]+\\.)?{escaped}[:/?#]"));
+        patterns.push(format!("^{scheme}://([^/?#]+\\.)?{escaped}$"));
+    }
+    patterns
 }
 
 /// Whether `url`'s host is `domain` or a subdomain of it.
@@ -121,10 +128,12 @@ pub fn blocks_host(domain: &str, url: &str) -> bool {
 pub fn rules() -> String {
     let mut rules: Vec<Value> = UNWANTED
         .iter()
-        .map(|domain| {
-            json!({
-                "trigger": { "url-filter": blocker(domain), "load-type": ["third-party"] },
-                "action": { "type": "block" }
+        .flat_map(|domain| {
+            blocker(domain).into_iter().map(|pattern| {
+                json!({
+                    "trigger": { "url-filter": pattern, "load-type": ["third-party"] },
+                    "action": { "type": "block" }
+                })
             })
         })
         .collect();
@@ -147,12 +156,12 @@ mod tests {
 
     #[test]
     fn shield_rules_stop_at_the_host_boundary() {
-        let pattern = blocker("adjust.com");
-        assert!(pattern.contains("wss?"));
         let compiled: serde_json::Value = serde_json::from_str(&rules()).unwrap();
         let filters: Vec<&str> =
             compiled.as_array().unwrap().iter().filter_map(|rule| rule["trigger"]["url-filter"].as_str()).collect();
-        assert!(filters.contains(&pattern.as_str()));
+        assert!(filters.iter().all(|filter| !filter.contains('|')));
+        assert!(filters.contains(&"^https?://([^/?#]+\\.)?adjust\\.com[:/?#]"));
+        assert!(filters.contains(&"^wss?://([^/?#]+\\.)?adjust\\.com[:/?#]"));
         assert!(blocks_host("adjust.com", "https://adjust.com/pixel"));
         assert!(blocks_host("adjust.com", "wss://track.adjust.com/socket"));
         assert!(blocks_host("adjust.com", "ws://adjust.com"));
